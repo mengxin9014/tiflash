@@ -2245,6 +2245,7 @@ void Join::markMostMemoryUsedPartitionSpill()
     {
         if (partitions[i].build_partition.bytes > max_bytes && !partitions[i].spill)
         {
+            max_bytes = partitions[i].build_partition.bytes;
             target_partition_index = i;
         }
     }
