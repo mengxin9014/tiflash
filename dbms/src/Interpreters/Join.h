@@ -20,6 +20,7 @@
 #include <Common/Arena.h>
 #include <Common/HashTable/HashMap.h>
 #include <Common/Logger.h>
+#include <Core/Spiller.h>
 #include <DataStreams/IBlockInputStream.h>
 #include <Interpreters/AggregationCommon.h>
 #include <Interpreters/ExpressionActions.h>
@@ -111,7 +112,9 @@ public:
     /** Call `setBuildConcurrencyAndInitPool`, `initMapImpl` and `setSampleBlock`.
       * You must call this method before subsequent calls to insertFromBlock.
       */
-    void init(const Block & sample_block, size_t build_concurrency_ = 1);
+    void initBuild(const Block & sample_block, size_t max_join_bytes_, SpillConfig spiller_config, size_t build_concurrency_ = 1);
+
+    void initProbe(const Block & sample_block, SpillConfig spiller_config, size_t probe_concurrency_ = 1);
 
     void insertFromBlock(const Block & block);
 
@@ -139,6 +142,10 @@ public:
       * left_sample_block is passed without account of 'use_nulls' setting (columns will be converted to Nullable inside).
       */
     BlockInputStreamPtr createStreamWithNonJoinedRows(const Block & left_sample_block, size_t index, size_t step, size_t max_block_size) const;
+
+    void insertBlockToBuildPartition(Block & block, size_t partition_index);
+
+    void trySpillBuildPartitionsWithLock(bool force);
 
     /// Number of keys in all built JOIN maps.
     size_t getTotalRowCount() const;
@@ -297,6 +304,33 @@ public:
     // only use for left semi joins.
     const String match_helper_name;
 
+    struct BuildPartition
+    {
+        Blocks blocks;
+        size_t rows{0};
+        size_t bytes{0};
+    };
+    using BuildPartitions = std::vector<BuildPartition>;
+
+    struct ProbePartition
+    {
+        Blocks blocks;
+        size_t rows{0};
+        size_t bytes{0};
+    };
+    using ProbePartitions = std::vector<ProbePartition>;
+
+    struct JoinPartition
+    {
+        BuildPartition build_partition;
+        ProbePartition probe_partition;
+        bool spill;
+    };
+    using JoinPartitions = std::vector<JoinPartition>;
+
+    SpillerPtr build_spiller;
+    SpillerPtr probe_spiller;
+
 
 private:
     friend class NonJoinedBlockInputStream;
@@ -335,8 +369,14 @@ private:
     BlocksList blocks;
     /// mutex to protect concurrent insert to blocks
     std::mutex blocks_lock;
+    /// mutex to protect concurrent modify partitions
+    std::mutex partitions_lock;
     /// keep original block for concurrent build
-    Blocks original_blocks;
+
+    JoinPartitions partitions;
+
+    size_t max_spilled_size_per_spill;
+    size_t max_join_bytes;
 
     MapsAny maps_any; /// For ANY LEFT|INNER JOIN
     MapsAll maps_all; /// For ALL LEFT|INNER JOIN
@@ -372,6 +412,7 @@ private:
 
     Block totals;
     std::atomic<size_t> total_input_build_rows{0};
+    std::atomic<size_t> total_input_build_bytes{0};
     /** Protect state for concurrent use in insertFromBlock and joinBlock.
       * Note that these methods could be called simultaneously only while use of StorageJoin,
       *  and StorageJoin only calls these two methods.
@@ -426,6 +467,11 @@ private:
 
     template <ASTTableJoin::Kind KIND, ASTTableJoin::Strictness STRICTNESS, bool has_null_map>
     void joinBlockImplCrossInternal(Block & block, ConstNullMapPtr null_map) const;
+
+    IColumn::Selector selectDispatchBlock(const Strings & key_columns_names, const Block & from_block);
+    Blocks dispatchBlock(const Strings & key_columns_names, const Block & from_block);
+    void trySpillBuildPartitions(bool force);
+    void markMostMemoryUsedPartitionSpill();
 };
 
 using JoinPtr = std::shared_ptr<Join>;

@@ -314,7 +314,10 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
 
     right_query.source = build_pipeline.firstStream();
     right_query.join = join_ptr;
-    join_ptr->init(right_query.source->getHeader(), join_build_concurrency);
+    join_ptr->initBuild(right_query.source->getHeader(),
+                        settings.max_block_size,
+                        SpillConfig(context.getTemporaryPath(), fmt::format("{}_hash_join_probe", log->identifier()), context.getSettingsRef().max_spilled_size_per_spill, context.getFileProvider()),
+                        join_build_concurrency);
 
     /// probe side streams
     executeExpression(probe_pipeline, probe_side_prepare_actions, log, "append join key and join filters for probe side");

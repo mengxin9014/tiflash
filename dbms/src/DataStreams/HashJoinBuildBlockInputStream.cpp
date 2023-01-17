@@ -21,7 +21,11 @@ Block HashJoinBuildBlockInputStream::readImpl()
 {
     Block block = children.back()->read();
     if (!block)
+    {
+        join->trySpillBuildPartitionsWithLock(true);
         return block;
+    }
+
     join->insertFromBlock(block, concurrency_build_index);
     return block;
 }

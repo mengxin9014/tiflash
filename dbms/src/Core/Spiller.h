@@ -75,4 +75,6 @@ private:
     std::vector<std::unique_ptr<SpilledFiles>> spilled_files;
 };
 
+using SpillerPtr = std::unique_ptr<Spiller>;
+
 } // namespace DB

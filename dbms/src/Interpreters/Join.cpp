@@ -469,8 +469,14 @@ void Join::setBuildConcurrencyAndInitPool(size_t build_concurrency_)
         throw Exception("Logical error: `setBuildConcurrencyAndInitPool` shouldn't be called more than once", ErrorCodes::LOGICAL_ERROR);
     build_concurrency = std::max(1, build_concurrency_);
 
+    partitions.reserve(build_concurrency);
+
     for (size_t i = 0; i < getBuildConcurrencyInternal(); ++i)
+    {
         pools.emplace_back(std::make_shared<Arena>());
+        partitions.push_back(JoinPartition{});
+    }
+
     // init for non-joined-streams.
     if (getFullness(kind))
     {
@@ -515,16 +521,34 @@ void Join::setSampleBlock(const Block & block)
         sample_block_with_columns_to_add.insert(ColumnWithTypeAndName(Join::match_helper_type, match_helper_name));
 }
 
-void Join::init(const Block & sample_block, size_t build_concurrency_)
+void Join::initBuild(const Block & sample_block, size_t max_join_bytes_, SpillConfig spiller_config, size_t build_concurrency_)
 {
     std::unique_lock lock(rwlock);
     if (unlikely(initialized))
         throw Exception("Logical error: Join has been initialized", ErrorCodes::LOGICAL_ERROR);
     initialized = true;
+    max_spilled_size_per_spill = spiller_config.max_spilled_size_per_spill;
+    max_join_bytes = max_join_bytes_;
     setBuildConcurrencyAndInitPool(build_concurrency_);
+    build_spiller = std::make_unique<Spiller>(spiller_config,
+                                              false,
+                                              build_concurrency_,
+                                              sample_block,
+                                              log);
     /// Choose data structure to use for JOIN.
     initMapImpl(chooseMethod(getKeyColumns(key_names_right, sample_block), key_sizes));
     setSampleBlock(sample_block);
+}
+
+void Join::initProbe(const Block & sample_block, SpillConfig spiller_config, size_t probe_concurrency_)
+{
+    std::unique_lock lock(rwlock);
+    setProbeConcurrency(probe_concurrency_);
+    probe_spiller = std::make_unique<Spiller>(spiller_config,
+                                              false,
+                                              probe_concurrency_,
+                                              sample_block,
+                                              log);
 }
 
 namespace
@@ -855,15 +879,39 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
 
     if (unlikely(!initialized))
         throw Exception("Logical error: Join was not initialized", ErrorCodes::LOGICAL_ERROR);
+    auto dispatch_blocks = dispatchBlock(key_names_right, block);
+    assert(dispatch_blocks.size() == build_concurrency);
+
     Block * stored_block = nullptr;
     {
-        std::lock_guard lk(blocks_lock);
-        total_input_build_rows += block.rows();
-        blocks.push_back(block);
-        stored_block = &blocks.back();
-        original_blocks.push_back(block);
+        for (size_t i = 0; i < build_concurrency; ++i)
+        {
+            {
+                std::unique_lock partition_lock(partitions_lock);
+                Block & dispatch_block = dispatch_blocks[i];
+                if (!dispatch_block.rows())
+                {
+                    continue;
+                }
+                insertBlockToBuildPartition(dispatch_block, i);
+                trySpillBuildPartitions(false);
+                //                if (max_join_bytes && total_input_build_bytes > max_join_bytes)
+                if (total_input_build_bytes > 200)
+                {
+                    markMostMemoryUsedPartitionSpill();
+                    trySpillBuildPartitions(true);
+                }
+                if (partitions[i].spill)
+                {
+                    continue;
+                }
+                std::lock_guard lk(blocks_lock);
+                blocks.push_back(dispatch_block);
+                stored_block = &blocks.back();
+            }
+            insertFromBlockInternal(stored_block, stream_index);
+        }
     }
-    insertFromBlockInternal(stored_block, stream_index);
 }
 
 void Join::insertFromBlockInternal(Block * stored_block, size_t stream_index)
@@ -2129,6 +2177,111 @@ void Join::joinTotals(Block & block) const
 BlockInputStreamPtr Join::createStreamWithNonJoinedRows(const Block & left_sample_block, size_t index, size_t step, size_t max_block_size) const
 {
     return std::make_shared<NonJoinedBlockInputStream>(*this, left_sample_block, index, step, max_block_size);
+}
+
+Blocks Join::dispatchBlock(const Strings & key_columns_names, const Block & from_block)
+{
+    size_t num_shards = build_concurrency;
+    size_t num_cols = from_block.columns();
+    Blocks result(num_shards);
+    if (num_shards == 1)
+    {
+        result[0] = from_block;
+        return result;
+    }
+
+    IColumn::Selector selector = selectDispatchBlock(key_columns_names, from_block);
+
+
+    for (size_t i = 0; i < num_shards; ++i)
+        result[i] = from_block.cloneEmpty();
+
+    for (size_t i = 0; i < num_cols; ++i)
+    {
+        auto dispatched_columns = from_block.getByPosition(i).column->scatter(num_shards, selector);
+        assert(result.size() == dispatched_columns.size());
+        for (size_t block_index = 0; block_index < num_shards; ++block_index)
+        {
+            result[block_index].getByPosition(i).column = std::move(dispatched_columns[block_index]);
+        }
+    }
+    return result;
+}
+
+static ALWAYS_INLINE IColumn::Selector hashToSelector(const WeakHash32 & hash, size_t num_shards)
+{
+    //    assert(num_shards > 0 && (num_shards & (num_shards - 1)) == 0);
+    const auto & data = hash.getData();
+    size_t num_rows = data.size();
+
+    IColumn::Selector selector(num_rows);
+    for (size_t i = 0; i < num_rows; ++i)
+        /// Apply intHash64 to mix bits in data.
+        /// HashTable internally uses WeakHash32, and we need to get different lower bits not to cause collisions.
+        //        selector[i] = intHash64(data[i]) & (num_shards - 1);
+        selector[i] = intHash64(data[i]) % num_shards;
+    return selector;
+}
+
+IColumn::Selector Join::selectDispatchBlock(const Strings & key_columns_names, const Block & from_block)
+{
+    size_t num_rows = from_block.rows();
+    size_t num_shards = build_concurrency;
+
+    WeakHash32 hash(num_rows);
+    for (const auto & key_name : key_columns_names)
+    {
+        const auto & key_col = from_block.getByName(key_name).column->convertToFullColumnIfConst();
+        key_col->updateWeakHash32(hash);
+    }
+    return hashToSelector(hash, num_shards);
+}
+
+void Join::markMostMemoryUsedPartitionSpill()
+{
+    size_t target_partition_index = 0;
+    size_t max_bytes = 0;
+    for (size_t i = 0; i < partitions.size(); ++i)
+    {
+        if (partitions[i].build_partition.bytes > max_bytes && !partitions[i].spill)
+        {
+            target_partition_index = i;
+        }
+    }
+    partitions[target_partition_index].spill = true;
+}
+
+void Join::insertBlockToBuildPartition(Block & block, size_t partition_index)
+{
+    size_t rows = block.rows();
+    size_t bytes = block.bytes();
+    total_input_build_rows += rows;
+    total_input_build_bytes += bytes;
+    partitions[partition_index].build_partition.rows += rows;
+    partitions[partition_index].build_partition.bytes += bytes;
+    partitions[partition_index].build_partition.blocks.push_back(block);
+}
+
+void Join::trySpillBuildPartitionsWithLock(bool force)
+{
+    std::lock_guard lk(partitions_lock);
+    trySpillBuildPartitions(force);
+}
+
+void Join::trySpillBuildPartitions(bool force)
+{
+    for (size_t i = 0; i < partitions.size(); ++i)
+    {
+        if (partitions[i].spill && (force || partitions[i].build_partition.bytes >= max_spilled_size_per_spill))
+        {
+            build_spiller->spillBlocks(partitions[i].build_partition.blocks, i);
+            partitions[i].build_partition.blocks.clear();
+            total_input_build_bytes -= partitions[i].build_partition.bytes;
+            total_input_build_rows -= partitions[i].build_partition.rows;
+            partitions[i].build_partition.bytes = 0;
+            partitions[i].build_partition.rows = 0;
+        }
+    }
 }
 
 void ProbeProcessInfo::resetBlock(Block && block_)

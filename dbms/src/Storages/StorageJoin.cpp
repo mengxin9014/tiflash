@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <Common/typeid_cast.h>
+#include <Core/SpillConfig.h>
 #include <Interpreters/Join.h>
 #include <Parsers/ASTIdentifier.h>
 #include <Poco/String.h> /// toLower
@@ -58,7 +59,7 @@ StorageJoin::StorageJoin(
                                   "" /*req_id=*/,
                                   false /*enable_fine_grained_shuffle_*/,
                                   0 /*fine_grained_shuffle_count_*/);
-    join->init(getSampleBlock().sortColumns());
+    join->initBuild(getSampleBlock().sortColumns(), 0, SpillConfig("", "", 0, nullptr));
     restore();
 }
 
