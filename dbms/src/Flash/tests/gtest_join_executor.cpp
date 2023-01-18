@@ -755,7 +755,7 @@ TEST_F(JoinExecutorTestRunner, Test)
 try
 {
     context.addMockTable("split_test", "t1", {{"a", TiDB::TP::TypeLong}, {"b", TiDB::TP::TypeLong}}, {toVec<Int32>("a", {1, 2}), toVec<Int32>("b", {2, 2})});
-    context.addMockTable("split_test", "t2", {{"a", TiDB::TP::TypeLong}}, {toVec<Int32>("a", {1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4})});
+    context.addMockTable("split_test", "t2", {{"a", TiDB::TP::TypeLong}}, {toVec<Int32>("a", {1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0})});
 
     auto request = context
                        .scan("split_test", "t1")
@@ -763,7 +763,7 @@ try
                        .build(context);
 
     std::vector<size_t> block_sizes{3};
-    const ColumnsWithTypeAndName expect = {toNullableVec<Int32>({1, 1, 2, 2, 2, 2}), toNullableVec<Int32>({2, 2, 2, 2, 2, 2}), toNullableVec<Int32>({1, 1, 2, 2, 2, 2})};
+    const ColumnsWithTypeAndName expect = {toNullableVec<Int32>({1, 1, 1, 2, 2, 2}), toNullableVec<Int32>({2, 2, 2, 2, 2, 2}), toNullableVec<Int32>({1, 1, 1, 2, 2, 2})};
     executeAndAssertColumnsEqual(request, expect);
 }
 CATCH

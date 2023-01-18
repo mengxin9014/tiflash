@@ -905,9 +905,10 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
                 {
                     continue;
                 }
-                std::lock_guard lk(blocks_lock);
+
+
                 blocks.push_back(dispatch_block);
-                stored_block = &blocks.back();
+                stored_block = &partitions[i].build_partition.blocks.back();
             }
             insertFromBlockInternal(stored_block, stream_index);
         }
@@ -2267,6 +2268,17 @@ void Join::trySpillBuildPartitionsWithLock(bool force)
 {
     std::lock_guard lk(partitions_lock);
     trySpillBuildPartitions(force);
+}
+
+bool Join::getPartitionSpilledWithLock(size_t partition_index)
+{
+    std::lock_guard lk(partitions_lock);
+    return partitions[partition_index].spill;
+}
+
+Block Join::getOneProbeBlock()
+{
+    std::lock_guard lk(probe_blocks_lock);
 }
 
 void Join::trySpillBuildPartitions(bool force)

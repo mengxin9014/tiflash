@@ -147,6 +147,12 @@ public:
 
     void trySpillBuildPartitionsWithLock(bool force);
 
+    bool getPartitionSpilledWithLock(size_t partition_index);
+
+    Block Join::getOneProbeBlock();
+
+    Blocks dispatchBlock(const Strings & key_columns_names, const Block & from_block);
+
     /// Number of keys in all built JOIN maps.
     size_t getTotalRowCount() const;
     /// Sum size in bytes of all buffers, used for JOIN maps and for all memory pools.
@@ -371,9 +377,13 @@ private:
     std::mutex blocks_lock;
     /// mutex to protect concurrent modify partitions
     std::mutex partitions_lock;
+    /// mutex to protect concurrent modify probe blocks
+    std::mutex probe_blocks_lock;
     /// keep original block for concurrent build
 
     JoinPartitions partitions;
+
+    BlocksList probe_blocks;
 
     size_t max_spilled_size_per_spill;
     size_t max_join_bytes;
@@ -469,7 +479,6 @@ private:
     void joinBlockImplCrossInternal(Block & block, ConstNullMapPtr null_map) const;
 
     IColumn::Selector selectDispatchBlock(const Strings & key_columns_names, const Block & from_block);
-    Blocks dispatchBlock(const Strings & key_columns_names, const Block & from_block);
     void trySpillBuildPartitions(bool force);
     void markMostMemoryUsedPartitionSpill();
 };

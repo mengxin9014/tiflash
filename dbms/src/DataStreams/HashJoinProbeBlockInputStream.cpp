@@ -155,4 +155,8 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
     }
 }
 
+Block & HashJoinProbeBlockInputStream::getDispatchedBlock()
+{
+}
+
 } // namespace DB
