@@ -50,7 +50,6 @@ public:
 protected:
     Block readImpl() override;
     Block getOutputBlock();
-    Block & getDispatchedBlock();
 
 private:
     enum class ProbeStatus

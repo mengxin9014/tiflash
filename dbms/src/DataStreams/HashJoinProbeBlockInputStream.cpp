@@ -113,7 +113,17 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         {
             if (probe_process_info.all_rows_joined_finish)
             {
-                Block block = children.back()->read();
+                Block block = join->getOneProbeBlockWithLock();
+                if (!block)
+                {
+                    block = children.back()->read();
+                    if (block)
+                    {
+                        join->dispatchProbeBlock(block);
+                        continue;
+                    }
+                }
+
                 if (!block)
                 {
                     join->finishOneProbe();
@@ -153,10 +163,6 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             return {};
         }
     }
-}
-
-Block & HashJoinProbeBlockInputStream::getDispatchedBlock()
-{
 }
 
 } // namespace DB

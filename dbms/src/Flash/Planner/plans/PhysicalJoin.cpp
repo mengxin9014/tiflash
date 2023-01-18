@@ -130,6 +130,8 @@ PhysicalPlanNodePtr PhysicalJoin::build(
 
     const Settings & settings = context.getSettingsRef();
     size_t max_block_size_for_cross_join = settings.max_block_size;
+    size_t max_spilled_size_per_spill = settings.max_spilled_size_per_spill;
+    size_t max_join_bytes = settings.max_join_bytes;
     fiu_do_on(FailPoints::minimum_block_size_for_cross_join, { max_block_size_for_cross_join = 1; });
 
     JoinPtr join_ptr = std::make_shared<Join>(
@@ -148,7 +150,9 @@ PhysicalPlanNodePtr PhysicalJoin::build(
         other_eq_filter_from_in_column_name,
         other_condition_expr,
         max_block_size_for_cross_join,
-        match_helper_name);
+        match_helper_name,
+        max_spilled_size_per_spill,
+        max_join_bytes);
 
     recordJoinExecuteInfo(dag_context, executor_id, build_plan->execId(), join_ptr);
 
@@ -214,7 +218,6 @@ void PhysicalJoin::buildSideTransform(DAGPipeline & build_pipeline, Context & co
     build_query.join = join_ptr;
     auto & settings = context.getSettingsRef();
     join_ptr->initBuild(build_query.source->getHeader(),
-                        settings.max_join_bytes,
                         SpillConfig(context.getTemporaryPath(), fmt::format("{}_hash_join_build", log->identifier()), settings.max_spilled_size_per_spill, context.getFileProvider()),
                         join_build_concurrency);
     dag_context.addSubquery(execId(), std::move(build_query));

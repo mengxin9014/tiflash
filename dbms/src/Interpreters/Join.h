@@ -107,12 +107,14 @@ public:
          const String & other_eq_filter_from_in_column = "",
          ExpressionActionsPtr other_condition_ptr = nullptr,
          size_t max_block_size = 0,
-         const String & match_helper_name = "");
+         const String & match_helper_name = "",
+         size_t max_spilled_size_per_spill_ = 1024ULL * 1024 * 1024,
+         size_t max_join_bytes_ = 0);
 
     /** Call `setBuildConcurrencyAndInitPool`, `initMapImpl` and `setSampleBlock`.
       * You must call this method before subsequent calls to insertFromBlock.
       */
-    void initBuild(const Block & sample_block, size_t max_join_bytes_, SpillConfig spiller_config, size_t build_concurrency_ = 1);
+    void initBuild(const Block & sample_block, SpillConfig spiller_config, size_t build_concurrency_ = 1);
 
     void initProbe(const Block & sample_block, SpillConfig spiller_config, size_t probe_concurrency_ = 1);
 
@@ -145,11 +147,21 @@ public:
 
     void insertBlockToBuildPartition(Block & block, size_t partition_index);
 
+    void insertBlockToProbePartition(Block & block, size_t partition_index);
+
+    void insertToProbeBlocksWithLock(Block & block);
+
     void trySpillBuildPartitionsWithLock(bool force);
+
+    void trySpillProbePartitionsWithLock(bool force);
 
     bool getPartitionSpilledWithLock(size_t partition_index);
 
-    Block Join::getOneProbeBlock();
+    bool getPartitionSpilled(size_t partition_index);
+
+    Block getOneProbeBlockWithLock();
+
+    void dispatchProbeBlock(Block & block);
 
     Blocks dispatchBlock(const Strings & key_columns_names, const Block & from_block);
 
@@ -423,6 +435,8 @@ private:
     Block totals;
     std::atomic<size_t> total_input_build_rows{0};
     std::atomic<size_t> total_input_build_bytes{0};
+
+    std::atomic<size_t> total_spilled_partition_num{0};
     /** Protect state for concurrent use in insertFromBlock and joinBlock.
       * Note that these methods could be called simultaneously only while use of StorageJoin,
       *  and StorageJoin only calls these two methods.
@@ -480,6 +494,8 @@ private:
 
     IColumn::Selector selectDispatchBlock(const Strings & key_columns_names, const Block & from_block);
     void trySpillBuildPartitions(bool force);
+    void trySpillProbePartitions(bool force);
+
     void markMostMemoryUsedPartitionSpill();
 };
 
