@@ -128,10 +128,7 @@ struct JoinMemoryInfo
   *
   * Default values for outer joins (LEFT, RIGHT, FULL):
   *
-  * Behaviour is controlled by 'join_use_nulls' settings.
-  * If it is false, we substitute (global) default value for the data type, for non-joined rows
-  *  (zero, empty string, etc. and NULL for Nullable data types).
-  * If it is true, we always generate Nullable column and substitute NULLs for non-joined rows,
+  * Always generate Nullable column and substitute NULLs for non-joined rows,
   *  as in standard SQL.
   */
 using JoinPtr = std::shared_ptr<Join>;
@@ -142,7 +139,6 @@ class Join
 public:
     Join(const Names & key_names_left_,
          const Names & key_names_right_,
-         bool use_nulls_,
          ASTTableJoin::Kind kind_,
          ASTTableJoin::Strictness strictness_,
          const String & req_id,
@@ -197,7 +193,6 @@ public:
     /** For RIGHT and FULL JOINs.
       * A stream that will contain default values from left table, joined with rows from right table, that was not joined before.
       * Use only after all calls to joinBlock was done.
-      * left_sample_block is passed without account of 'use_nulls' setting (columns will be converted to Nullable inside).
       */
     BlockInputStreamPtr createStreamWithNonJoinedRows(const Block & left_sample_block, size_t index, size_t step, size_t max_block_size) const;
 
@@ -252,7 +247,6 @@ public:
 
     ASTTableJoin::Kind getKind() const { return kind; }
 
-    bool useNulls() const { return use_nulls; }
     const Names & getLeftJoinKeys() const { return key_names_left; }
 
     size_t getProbeConcurrency() const
@@ -419,7 +413,7 @@ public:
         std::unique_ptr<ConcurrentHashMapWithSavedHash<StringRef, Mapped>> key_fixed_string;
         std::unique_ptr<ConcurrentHashMap<UInt128, Mapped, HashCRC32<UInt128>>> keys128;
         std::unique_ptr<ConcurrentHashMap<UInt256, Mapped, HashCRC32<UInt256>>> keys256;
-        std::unique_ptr<ConcurrentHashMap<StringRef, Mapped>> serialized;
+        std::unique_ptr<ConcurrentHashMapWithSavedHash<StringRef, Mapped>> serialized;
         // TODO: add more cases like Aggregator
     };
 
@@ -473,9 +467,6 @@ private:
     const Names key_names_left;
     /// Names of key columns (columns for equi-JOIN) in "right" table (in the order they appear in USING clause).
     const Names key_names_right;
-
-    /// Substitute NULLs for non-JOINed rows.
-    bool use_nulls;
 
     mutable std::mutex build_mutex;
     std::condition_variable build_cv;
