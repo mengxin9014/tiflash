@@ -59,7 +59,7 @@ StorageJoin::StorageJoin(
                                   "" /*req_id=*/,
                                   false /*enable_fine_grained_shuffle_*/,
                                   0 /*fine_grained_shuffle_count_*/);
-    join->initBuild(getSampleBlock().sortColumns(), SpillConfig("", "", 0, nullptr));
+    join->initBuild(getSampleBlock().sortColumns());
     restore();
 }
 

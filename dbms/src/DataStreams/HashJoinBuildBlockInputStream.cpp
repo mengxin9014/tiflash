@@ -22,7 +22,7 @@ Block HashJoinBuildBlockInputStream::readImpl()
     Block block = children.back()->read();
     if (!block)
     {
-        join->trySpillBuildPartitionsWithLock(true);
+        join->finishOneBuild();
         return block;
     }
 

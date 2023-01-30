@@ -261,6 +261,8 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
 
     const Settings & settings = context.getSettingsRef();
     size_t max_block_size_for_cross_join = settings.max_block_size;
+    size_t max_spilled_size_per_spill = settings.max_spilled_size_per_spill;
+    size_t max_join_bytes = settings.max_join_bytes;
     fiu_do_on(FailPoints::minimum_block_size_for_cross_join, { max_block_size_for_cross_join = 1; });
 
     JoinPtr join_ptr = std::make_shared<Join>(
@@ -279,7 +281,11 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
         other_eq_filter_from_in_column_name,
         other_condition_expr,
         max_block_size_for_cross_join,
-        match_helper_name);
+        match_helper_name,
+        max_spilled_size_per_spill,
+        max_join_bytes,
+        context.getTemporaryPath(),
+        context.getFileProvider());
 
     recordJoinExecuteInfo(tiflash_join.build_side_index, join_ptr);
 
@@ -309,8 +315,6 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
     right_query.source = build_pipeline.firstStream();
     right_query.join = join_ptr;
     join_ptr->initBuild(right_query.source->getHeader(),
-                        settings.max_block_size,
-                        SpillConfig(context.getTemporaryPath(), fmt::format("{}_hash_join_probe", log->identifier()), context.getSettingsRef().max_spilled_size_per_spill, context.getFileProvider()),
                         join_build_concurrency);
 
     /// probe side streams

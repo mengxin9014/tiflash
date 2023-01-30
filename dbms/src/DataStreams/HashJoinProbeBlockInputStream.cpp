@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <DataStreams/HashJoinProbeBlockInputStream.h>
+#include <DataStreams/HashJoinRestorePartitionBlockInputStream.h>
 
 namespace DB
 {
@@ -21,12 +22,13 @@ HashJoinProbeBlockInputStream::HashJoinProbeBlockInputStream(
     const JoinPtr & join_,
     size_t probe_index_,
     const String & req_id,
-    UInt64 max_block_size)
+    UInt64 max_block_size_)
     : log(Logger::get(req_id))
     , join(join_)
     , probe_index(probe_index_)
-    , probe_process_info(max_block_size)
-    , squashing_transform(max_block_size)
+    , max_block_size(max_block_size_)
+    , probe_process_info(max_block_size_)
+    , squashing_transform(max_block_size_)
 {
     children.push_back(input);
 
@@ -83,6 +85,8 @@ void HashJoinProbeBlockInputStream::cancel(bool kill)
 
 Block HashJoinProbeBlockInputStream::readImpl()
 {
+    std::cout << "read probe : " << probe_index << std::endl
+              << std::flush;
     // if join finished, return {} directly.
     if (squashing_transform.isJoinFinished())
     {
@@ -114,23 +118,35 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             if (probe_process_info.all_rows_joined_finish)
             {
                 Block block = join->getOneProbeBlockWithLock();
+
                 if (!block)
                 {
                     block = children.back()->read();
                     if (block)
                     {
                         join->dispatchProbeBlock(block);
-                        continue;
+                        break;
                     }
-                }
 
-                if (!block)
-                {
                     join->finishOneProbe();
+                    std::cout << "finish probe, index : " << probe_index << " round : " << join->restore_round << std::endl
+                              << std::flush;
+                    restore_probe_stream.reset();
+
                     if (join->needReturnNonJoinedData())
                         status = ProbeStatus::WAIT_FOR_READ_NON_JOINED_DATA;
+                    else if (join->hasPartitionSpilledWithLock())
+                    {
+                        std::cout << "PROBE ->  WAIT_SPILL_FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
+                                  << std::flush;
+                        status = ProbeStatus::WAIT_SPILL_FINISHED;
+                    }
                     else
+                    {
+                        std::cout << "PROBE ->  FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
+                                  << std::flush;
                         status = ProbeStatus::FINISHED;
+                    }
                     break;
                 }
                 else
@@ -155,9 +171,70 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             if (!block)
             {
                 non_joined_stream->readSuffix();
-                status = ProbeStatus::FINISHED;
+                if (join->getTotalSpilledPartitions() > 0)
+                {
+                    status = ProbeStatus::BUILD_RESTORE_PARTITION;
+                }
+                else
+                {
+                    status = ProbeStatus::FINISHED;
+                }
+                break;
             }
             return block;
+        }
+        case ProbeStatus::WAIT_SPILL_FINISHED:
+        {
+            std::cout << "WAIT_SPILL_FINISHED ->  BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
+                      << std::flush;
+            join->waitUntilAllProbeFinished();
+            status = ProbeStatus::BUILD_RESTORE_PARTITION;
+            break;
+        }
+        case ProbeStatus::BUILD_RESTORE_PARTITION:
+        {
+            std::cout << "BUILD_RESTORE_PARTITION ->  WAIT_BUILD_RESTORE_PARTITION_FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
+                      << std::flush;
+            auto [restore_join, stream_index, build_stream, probe_stream] = join->getOneRestoreStream();
+            //            join = restore_join;
+            build_stream = std::make_shared<HashJoinBuildBlockInputStream>(build_stream, restore_join, stream_index, log->identifier());
+            restore_probe_stream = std::make_shared<HashJoinProbeBlockInputStream>(probe_stream, restore_join, stream_index, log->identifier(), max_block_size);
+            while (build_stream->read())
+                ;
+            status = ProbeStatus::WAIT_BUILD_RESTORE_PARTITION_FINISHED;
+            break;
+        }
+        case ProbeStatus::WAIT_BUILD_RESTORE_PARTITION_FINISHED:
+        {
+            std::cout << "WAIT_BUILD_RESTORE_PARTITION_FINISHED ->  PROBE_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
+                      << std::flush;
+            join->waitUntilAllBuildFinished();
+            probe_process_info.all_rows_joined_finish = true;
+            status = ProbeStatus::PROBE_RESTORE_PARTITION;
+            break;
+        }
+        case ProbeStatus::PROBE_RESTORE_PARTITION:
+        {
+            Block ret = restore_probe_stream->read();
+            if (likely(ret))
+            {
+                return ret;
+            }
+            //            assert(join->getParent());
+            //            join = join->getParent();
+            status = join->hasPartitionSpilledWithLock() || join->hasRestoreStreamsWithLock() ? ProbeStatus::BUILD_RESTORE_PARTITION : ProbeStatus::FINISHED;
+
+            if (status == ProbeStatus::BUILD_RESTORE_PARTITION)
+            {
+                std::cout << "PROBE_RESTORE_PARTITION ->  BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
+                          << std::flush;
+            }
+            else
+            {
+                std::cout << "PROBE_RESTORE_PARTITION ->  FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
+                          << std::flush;
+            }
+            break;
         }
         case ProbeStatus::FINISHED:
             return {};

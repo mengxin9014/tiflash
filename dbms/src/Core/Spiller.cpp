@@ -127,7 +127,8 @@ BlockInputStreams Spiller::restoreBlocks(size_t partition_id, size_t max_stream_
     }
     else
     {
-        size_t return_stream_num = std::min(max_stream_size, spilled_files[partition_id]->spilled_files.size());
+        //        size_t return_stream_num = std::min(max_stream_size, spilled_files[partition_id]->spilled_files.size());
+        size_t return_stream_num = max_stream_size;
         std::vector<std::vector<String>> files(return_stream_num);
         // todo balance based on SpilledRows
         for (size_t i = 0; i < spilled_files[partition_id]->spilled_files.size(); ++i)
@@ -139,13 +140,15 @@ BlockInputStreams Spiller::restoreBlocks(size_t partition_id, size_t max_stream_
         }
         for (size_t i = 0; i < return_stream_num; ++i)
         {
-            if (likely(!files[i].empty()))
+            if (likely(i < files.size() && !files[i].empty()))
                 ret.push_back(std::make_shared<SpilledFilesInputStream>(files[i], input_schema, config.file_provider, spill_version));
+            else
+                ret.push_back(std::make_shared<NullBlockInputStream>(input_schema));
         }
     }
     LOG_DEBUG(logger, "Will restore {} rows from file of size {:.3f} MiB compressed, {:.3f} MiB uncompressed.", details.rows, (details.data_bytes_compressed / 1048576.0), (details.data_bytes_uncompressed / 1048576.0));
-    if (ret.empty())
-        ret.push_back(std::make_shared<NullBlockInputStream>(input_schema));
+    //    if (ret.empty())
+    //        ret.push_back(std::make_shared<NullBlockInputStream>(input_schema));
     return ret;
 }
 

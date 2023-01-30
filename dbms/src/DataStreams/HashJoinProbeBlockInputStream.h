@@ -40,7 +40,7 @@ public:
         const JoinPtr & join_,
         size_t probe_index,
         const String & req_id,
-        UInt64 max_block_size);
+        UInt64 max_block_size_);
 
     String getName() const override { return name; }
     Block getTotals() override;
@@ -55,6 +55,10 @@ private:
     enum class ProbeStatus
     {
         PROBE,
+        BUILD_RESTORE_PARTITION,
+        PROBE_RESTORE_PARTITION,
+        WAIT_BUILD_RESTORE_PARTITION_FINISHED,
+        WAIT_SPILL_FINISHED,
         WAIT_FOR_READ_NON_JOINED_DATA,
         READ_NON_JOINED_DATA,
         FINISHED,
@@ -64,12 +68,14 @@ private:
     const LoggerPtr log;
     JoinPtr join;
     size_t probe_index;
+    UInt64 max_block_size;
     ProbeProcessInfo probe_process_info;
     BlockInputStreamPtr non_joined_stream;
     SquashingHashJoinBlockTransform squashing_transform;
     ProbeStatus status{ProbeStatus::PROBE};
     size_t joined_rows = 0;
     size_t non_joined_rows = 0;
+    std::shared_ptr<HashJoinProbeBlockInputStream> restore_probe_stream;
 };
 
 } // namespace DB

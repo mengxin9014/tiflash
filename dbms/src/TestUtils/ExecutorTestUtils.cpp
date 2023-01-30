@@ -118,7 +118,7 @@ void ExecutorTest::executeExecutor(
     std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &)> assert_func)
 {
     WRAP_FOR_DIS_ENABLE_PLANNER_BEGIN
-    std::vector<size_t> concurrencies{1};
+    std::vector<size_t> concurrencies{3};
     for (auto concurrency : concurrencies)
     {
         std::vector<size_t> block_sizes{3};
