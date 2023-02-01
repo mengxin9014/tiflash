@@ -57,12 +57,12 @@ private:
         PROBE,
         BUILD_RESTORE_PARTITION,
         PROBE_RESTORE_PARTITION,
-        WAIT_BUILD_RESTORE_PARTITION_FINISHED,
-        WAIT_SPILL_FINISHED,
+        JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE,
         WAIT_FOR_READ_NON_JOINED_DATA,
         READ_NON_JOINED_DATA,
         FINISHED,
     };
+
     void readSuffixImpl() override;
 
     const LoggerPtr log;
@@ -76,6 +76,8 @@ private:
     size_t joined_rows = 0;
     size_t non_joined_rows = 0;
     std::shared_ptr<HashJoinProbeBlockInputStream> restore_probe_stream;
+    std::list<JoinPtr> parents;
 };
+
 
 } // namespace DB

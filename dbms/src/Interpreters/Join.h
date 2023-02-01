@@ -226,7 +226,11 @@ public:
 
     bool hasPartitionSpilledWithLock();
 
-    bool hasRestoreStreamsWithLock();
+    bool hasPartitionSpilled();
+
+    bool hasRestoreStreams();
+
+    bool needRestore();
 
     bool isPartitionSpilled(size_t partition_index);
 
@@ -242,8 +246,6 @@ public:
     size_t getTotalByteCount() const;
 
     size_t getTotalBuildInputRows() const { return join_memory_info.getTotalRows(); }
-
-    size_t getTotalSpilledPartitions() const { return spilled_partition_indexes.size(); }
 
     ASTTableJoin::Kind getKind() const { return kind; }
 
@@ -271,7 +273,7 @@ public:
                 std::unique_lock lk(partitions_lock);
                 trySpillProbePartitions(true);
                 tryMarkProbeSpillFinish();
-                tryReleaseAllBuildPartition();
+                tryReleaseAllPartitions();
             }
             probe_cv.notify_all();
         }
@@ -313,7 +315,7 @@ public:
         });
     }
 
-    std::mutex test_lock;
+    std::mutex external_lock;
 
     enum BuildTableState
     {
@@ -449,7 +451,7 @@ public:
     {
         BuildPartition build_partition;
         ProbePartition probe_partition;
-        bool spill;
+        bool spill{};
     };
     using JoinPartitions = std::vector<JoinPartition>;
 
@@ -504,6 +506,8 @@ private:
     std::list<size_t> spilled_partition_indexes;
 
     BlocksList probe_blocks;
+
+    size_t restore_stream_index;
 
     size_t max_spilled_size_per_spill;
     size_t max_join_bytes;
@@ -611,8 +615,9 @@ private:
     void trySpillBuildPartitions(bool force);
     void trySpillBuildPartition(size_t partition_index, bool force);
     void tryReleaseBuildPartition(size_t partition_index);
-    void tryReleaseAllBuildPartitionWithLock();
-    void tryReleaseAllBuildPartition();
+    void tryReleaseProbePartition(size_t partition_index);
+    void tryReleaseAllPartitions();
+
     void trySpillProbePartitions(bool force);
 
     void markMostMemoryUsedPartitionSpill();

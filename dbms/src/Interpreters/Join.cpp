@@ -153,6 +153,7 @@ Join::Join(
     , other_condition_ptr(other_condition_ptr_)
     , original_strictness(strictness)
     , max_block_size_for_cross_join(max_block_size_)
+    , restore_stream_index(0)
     , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
     , build_table_state(BuildTableState::SUCCEED)
@@ -163,6 +164,7 @@ Join::Join(
     , enable_fine_grained_shuffle(enable_fine_grained_shuffle_)
     , fine_grained_shuffle_count(fine_grained_shuffle_count_)
 {
+    std::cout<<"Join Constructor. round :"<<restore_round_<<std::endl;
     if (other_condition_ptr != nullptr)
     {
         /// if there is other_condition, then should keep all the valid rows during probe stage
@@ -538,7 +540,6 @@ std::shared_ptr<Join> Join::createRestoreJoin()
     return std::make_shared<Join>(
         key_names_left,
         key_names_right,
-        true,
         kind,
         strictness,
         log->identifier(),
@@ -567,7 +568,7 @@ void Join::initBuild(const Block & sample_block, size_t build_concurrency_)
         throw Exception("Logical error: Join has been initialized", ErrorCodes::LOGICAL_ERROR);
     initialized = true;
     setBuildConcurrencyAndInitPool(build_concurrency_);
-    build_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_build", log->identifier()), max_spilled_size_per_spill, file_provider),
+    build_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_{}_build", log->identifier(), restore_round), max_spilled_size_per_spill, file_provider),
                                               false,
                                               build_concurrency_,
                                               sample_block,
@@ -581,7 +582,7 @@ void Join::initProbe(const Block & sample_block, size_t probe_concurrency_)
 {
     std::unique_lock lock(rwlock);
     setProbeConcurrency(probe_concurrency_);
-    probe_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_probe", log->identifier()), max_spilled_size_per_spill, file_provider),
+    probe_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_{}_probe", log->identifier(), restore_round), max_spilled_size_per_spill, file_provider),
                                               false,
                                               probe_concurrency_,
                                               sample_block,
@@ -2303,6 +2304,15 @@ void Join::markMostMemoryUsedPartitionSpill()
             target_partition_index = i;
         }
     }
+    {
+        std::unique_lock lk(external_lock);
+        std::cout<<fmt::format("all bytes used : {}", join_memory_info.getTotalBytes())<<std::endl;
+        for (size_t index = 0; index < partitions.size(); ++index)
+        {
+            std::cout<<fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes)<<std::endl;
+        }
+        std::cout<<fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index)<<std::endl;
+    }
     partitions[target_partition_index].spill = true;
     spilled_partition_indexes.push_back(target_partition_index);
     trySpillBuildPartition(target_partition_index, true);
@@ -2404,13 +2414,24 @@ bool Join::isPartitionSpilledWithLock(size_t partition_index)
 bool Join::hasPartitionSpilledWithLock()
 {
     std::unique_lock lk(partitions_lock);
+    return hasPartitionSpilled();
+}
+
+bool Join::hasPartitionSpilled()
+{
     return !spilled_partition_indexes.empty();
 }
 
-bool Join::hasRestoreStreamsWithLock()
+bool Join::hasRestoreStreams()
+{
+    return !restore_build_streams.empty() || !restore_probe_streams.empty();
+}
+
+bool Join::needRestore()
 {
     std::unique_lock lk(partitions_lock);
-    return !restore_build_streams.empty() || !restore_probe_streams.empty();
+    return hasPartitionSpilled();
+
 }
 
 bool Join::isPartitionSpilled(size_t partition_index)
@@ -2421,20 +2442,25 @@ bool Join::isPartitionSpilled(size_t partition_index)
 std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestoreStream()
 {
     std::unique_lock lk(partitions_lock);
-    size_t stream_index = 0;
     assert(restore_build_streams.size() == restore_probe_streams.size());
     auto get_back_stream = [](BlockInputStreams & streams) {
         BlockInputStreamPtr stream = streams.back();
         streams.pop_back();
         return stream;
     };
-
     if (!restore_build_streams.empty())
     {
-        return {restore_join, ++stream_index, get_back_stream(restore_build_streams), get_back_stream(restore_probe_streams)};
+        auto build_stream = get_back_stream(restore_build_streams);
+        auto probe_stream = get_back_stream(restore_probe_streams);
+        auto stream_index = ++restore_stream_index;
+        if (restore_build_streams.empty())
+        {
+            restore_stream_index = 0;
+            spilled_partition_indexes.pop_front();
+        }
+        return {restore_join, stream_index, build_stream, probe_stream};
     }
     auto spilled_partition_index = spilled_partition_indexes.front();
-    spilled_partition_indexes.pop_front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
     restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, build_concurrency);
     restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
@@ -2444,8 +2470,7 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     restore_join = createRestoreJoin();
     restore_join->initBuild(build_stream->getHeader(), build_concurrency);
     restore_join->initProbe(probe_stream->getHeader(), probe_concurrency);
-    stream_index = 0;
-    return {restore_join, stream_index, build_stream, probe_stream};
+    return {restore_join, restore_stream_index, build_stream, probe_stream};
 }
 
 void Join::dispatchProbeBlock(Block & block)
@@ -2498,17 +2523,22 @@ void Join::tryReleaseBuildPartition(size_t partition_index)
     partitions[partition_index].build_partition.rows = 0;
 }
 
-void Join::tryReleaseAllBuildPartitionWithLock()
+void Join::tryReleaseProbePartition(size_t partition_index)
 {
-    std::unique_lock lk(partitions_lock);
-    tryReleaseAllBuildPartition();
+    partitions[partition_index].probe_partition.blocks.clear();
+    partitions[partition_index].probe_partition.blocks.clear();
+    join_memory_info.subBytes(partitions[partition_index].probe_partition.bytes);
+    join_memory_info.subRows(partitions[partition_index].probe_partition.rows);
+    partitions[partition_index].probe_partition.bytes = 0;
+    partitions[partition_index].probe_partition.rows = 0;
 }
 
-void Join::tryReleaseAllBuildPartition()
+void Join::tryReleaseAllPartitions()
 {
     for (size_t i = 0; i < partitions.size(); ++i)
     {
         tryReleaseBuildPartition(i);
+        tryReleaseProbePartition(i);
     }
 }
 

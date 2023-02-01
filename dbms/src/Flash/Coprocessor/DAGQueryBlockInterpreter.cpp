@@ -324,7 +324,7 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
     pipeline.streams = probe_pipeline.streams;
     /// add join input stream
     size_t probe_index = 0;
-    join_ptr->setProbeConcurrency(pipeline.streams.size());
+    join_ptr->initProbe(pipeline.firstStream()->getHeader(), pipeline.streams.size());
     for (auto & stream : pipeline.streams)
     {
         stream = std::make_shared<HashJoinProbeBlockInputStream>(stream, join_ptr, probe_index++, log->identifier(), settings.max_block_size);
