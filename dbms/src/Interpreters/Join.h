@@ -153,6 +153,7 @@ public:
          size_t max_block_size = 0,
          const String & match_helper_name = "",
          size_t max_spilled_size_per_spill_ = 1024ULL * 1024 * 1024,
+         bool enable_join_spill = false,
          size_t max_join_bytes_ = 0,
          String tmp_path = "",
          FileProviderPtr file_provider = nullptr,
@@ -506,6 +507,8 @@ private:
     std::list<size_t> spilled_partition_indexes;
 
     BlocksList probe_blocks;
+
+    bool enable_join_spill;
 
     size_t restore_stream_index;
 

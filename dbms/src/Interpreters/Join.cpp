@@ -130,6 +130,7 @@ Join::Join(
     size_t max_block_size_,
     const String & match_helper_name,
     size_t max_spilled_size_per_spill_,
+    bool enable_join_spill_,
     size_t max_join_bytes_,
     String tmp_path_,
     FileProviderPtr file_provider_,
@@ -153,6 +154,7 @@ Join::Join(
     , other_condition_ptr(other_condition_ptr_)
     , original_strictness(strictness)
     , max_block_size_for_cross_join(max_block_size_)
+    , enable_join_spill(enable_join_spill_)
     , restore_stream_index(0)
     , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
@@ -164,7 +166,7 @@ Join::Join(
     , enable_fine_grained_shuffle(enable_fine_grained_shuffle_)
     , fine_grained_shuffle_count(fine_grained_shuffle_count_)
 {
-    std::cout<<"Join Constructor. round :"<<restore_round_<<std::endl;
+    std::cout << "Join Constructor. round :" << restore_round_ << std::endl;
     if (other_condition_ptr != nullptr)
     {
         /// if there is other_condition, then should keep all the valid rows during probe stage
@@ -537,6 +539,7 @@ void Join::setSampleBlock(const Block & block)
 
 std::shared_ptr<Join> Join::createRestoreJoin()
 {
+    RUNTIME_CHECK_MSG(restore_round < 5, "spill to disk repartition times should be smaller than 5.");
     return std::make_shared<Join>(
         key_names_left,
         key_names_right,
@@ -554,6 +557,7 @@ std::shared_ptr<Join> Join::createRestoreJoin()
         max_block_size_for_cross_join,
         match_helper_name,
         max_spilled_size_per_spill,
+        enable_join_spill,
         max_join_bytes,
         tmp_path,
         file_provider,
@@ -934,10 +938,10 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
             trySpillBuildPartition(i, false);
             //                if (max_join_bytes && total_input_build_bytes > max_join_bytes)
             //            if (join_memory_info.getTotalBytes() > 80 && restore_round == 0)
-            if (join_memory_info.getTotalBytes() > 40)
+            if (max_join_bytes && join_memory_info.getTotalBytes() > max_join_bytes)
             {
                 trySpillBuildPartitions(true);
-                if (join_memory_info.getTotalBytes() > 40)
+                if (join_memory_info.getTotalBytes() > max_join_bytes)
                 {
                     markMostMemoryUsedPartitionSpill();
                 }
@@ -2286,7 +2290,7 @@ IColumn::Selector Join::selectDispatchBlock(const Strings & key_columns_names, c
     WeakHash32 hash(num_rows);
     for (const auto & key_name : key_columns_names)
     {
-        const auto & key_col = from_block.getByName(key_name).column->convertToFullColumnIfConst();
+        const auto & key_col = from_block.getByName(key_name).column->isColumnConst() ? from_block.getByName(key_name).column->convertToFullColumnIfConst() : from_block.getByName(key_name).column;
         key_col->updateWeakHash32(hash);
     }
     return hashToSelector(hash);
@@ -2306,12 +2310,12 @@ void Join::markMostMemoryUsedPartitionSpill()
     }
     {
         std::unique_lock lk(external_lock);
-        std::cout<<fmt::format("all bytes used : {}", join_memory_info.getTotalBytes())<<std::endl;
+        std::cout << fmt::format("all bytes used : {}", join_memory_info.getTotalBytes()) << std::endl;
         for (size_t index = 0; index < partitions.size(); ++index)
         {
-            std::cout<<fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes)<<std::endl;
+            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
         }
-        std::cout<<fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index)<<std::endl;
+        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
     }
     partitions[target_partition_index].spill = true;
     spilled_partition_indexes.push_back(target_partition_index);
@@ -2431,7 +2435,6 @@ bool Join::needRestore()
 {
     std::unique_lock lk(partitions_lock);
     return hasPartitionSpilled();
-
 }
 
 bool Join::isPartitionSpilled(size_t partition_index)

@@ -134,13 +134,13 @@ void ExecutorTest::executeInterpreterWithDeltaMerge(const String & expected_stri
 
 void ExecutorTest::executeExecutor(
     const std::shared_ptr<tipb::DAGRequest> & request,
-    std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &)> assert_func)
+    std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &)> assert_func,
+    std::vector<size_t> concurrencies,
+    std::vector<size_t> block_sizes)
 {
     WRAP_FOR_TEST_BEGIN
-    std::vector<size_t> concurrencies{5, 10, 20};
     for (auto concurrency : concurrencies)
     {
-        std::vector<size_t> block_sizes{1, 2, 10, DEFAULT_BLOCK_SIZE};
         for (auto block_size : block_sizes)
         {
             context.context.setSetting("max_block_size", Field(static_cast<UInt64>(block_size)));
@@ -175,12 +175,16 @@ void ExecutorTest::executeExecutor(
     WRAP_FOR_TEST_END
 }
 
-void ExecutorTest::executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request, const ColumnsWithTypeAndName & expect_columns)
+void ExecutorTest::executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request, const ColumnsWithTypeAndName & expect_columns, std::vector<size_t> concurrencies, std::vector<size_t> block_sizes)
 {
-    executeExecutor(request, [&](const ColumnsWithTypeAndName & res) {
-        return columnsEqual(expect_columns, res, /*_restrict=*/false) << "\n  expect_block: \n"
-                                                                      << getColumnsContent(expect_columns);
-    });
+    executeExecutor(
+        request,
+        [&](const ColumnsWithTypeAndName & res) {
+            return columnsEqual(expect_columns, res, /*_restrict=*/false) << "\n  expect_block: \n"
+                                                                          << getColumnsContent(expect_columns);
+        },
+        concurrencies,
+        block_sizes);
 }
 
 void ExecutorTest::executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows)

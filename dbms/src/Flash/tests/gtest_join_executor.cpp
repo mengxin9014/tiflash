@@ -777,7 +777,7 @@ try
 CATCH
 
 
-TEST_F(JoinExecutorTestRunner, Test)
+TEST_F(JoinExecutorTestRunner, SpillToDisk)
 try
 {
     context.addMockTable("split_test", "t1", {{"a", TiDB::TP::TypeLong}, {"b", TiDB::TP::TypeLong}}, {toVec<Int32>("a", {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}), toVec<Int32>("b", {2, 2, 2, 2, 2, 2, 2, 2, 2, 2})});
@@ -789,7 +789,9 @@ try
                        .build(context);
 
     const ColumnsWithTypeAndName expect = {toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0}), toNullableVec<Int32>({2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}), toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0})};
-    executeAndAssertColumnsEqual(request, expect);
+    context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(40)));
+    executeAndAssertColumnsEqual(request, expect, {3, 10, 20}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
+    ASSERT_THROW(executeAndAssertColumnsEqual(request, expect, {1}, {DEFAULT_BLOCK_SIZE}), Exception);
 }
 CATCH
 
