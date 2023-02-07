@@ -250,28 +250,32 @@ size_t NonJoinedBlockInputStream::fillColumns(const Map & map,
             [](void * ptr) { delete reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(ptr); });
     }
 
+    if (current_segment >= map.getSegmentSize())
+    {
+        return rows_added;
+    }
     /// use pointer instead of reference because `it` need to be re-assigned latter
     auto it = reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(position.get());
     auto end = map.getSegmentTable(current_segment).end();
 
     for (; *it != end || current_segment + step < map.getSegmentSize();)
     {
-        if (*it == end)
+        if (*it == end || (parent.max_join_bytes && parent.partitions[current_segment].spill))
         {
-            // move to next internal hash table
-            do
+            current_segment += step;
+            if (current_segment >= map.getSegmentSize())
             {
-                current_segment += step;
-                position = decltype(position)(
-                    static_cast<void *>(new typename Map::SegmentType::HashTable::const_iterator(
-                        map.getSegmentTable(current_segment).begin())),
-                    [](void * ptr) { delete reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(ptr); });
-                it = reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(position.get());
-                end = map.getSegmentTable(current_segment).end();
-            } while (*it == end && current_segment + step < map.getSegmentSize());
-            if (*it == end)
                 break;
+            }
+            position = decltype(position)(
+                static_cast<void *>(new typename Map::SegmentType::HashTable::const_iterator(
+                    map.getSegmentTable(current_segment).begin())),
+                [](void * ptr) { delete reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(ptr); });
+            it = reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(position.get());
+            end = map.getSegmentTable(current_segment).end();
+            continue;
         }
+
         if ((*it)->getMapped().getUsed())
         {
             ++(*it);

@@ -153,7 +153,6 @@ public:
          size_t max_block_size = 0,
          const String & match_helper_name = "",
          size_t max_spilled_size_per_spill_ = 1024ULL * 1024 * 1024,
-         bool enable_join_spill = false,
          size_t max_join_bytes_ = 0,
          String tmp_path = "",
          FileProviderPtr file_provider = nullptr,
@@ -201,7 +200,7 @@ public:
 
     void insertBlockToProbePartition(Block & block, size_t partition_index);
 
-    void insertToProbeBlocksWithLock(Block & block);
+    void insertToProbeBlocksWithLock(Block & block, size_t partiton_index);
 
     void tryMarkBuildSpillFinishWithLock();
 
@@ -221,7 +220,7 @@ public:
 
     bool getPartitionSpilled(size_t partition_index);
 
-    Block getOneProbeBlockWithLock();
+    std::tuple<size_t, Block> getOneProbeBlockWithLock();
 
     bool isPartitionSpilledWithLock(size_t partition_index);
 
@@ -262,6 +261,7 @@ public:
         std::unique_lock lock(probe_mutex);
         probe_concurrency = concurrency;
         active_probe_concurrency = probe_concurrency;
+        active_non_join_concurrency = probe_concurrency;
     }
 
     void finishOneProbe()
@@ -270,6 +270,7 @@ public:
         active_probe_concurrency--;
         if (active_probe_concurrency == 0)
         {
+            if (!needReturnNonJoinedData())
             {
                 std::unique_lock lk(partitions_lock);
                 trySpillProbePartitions(true);
@@ -284,6 +285,30 @@ public:
         std::unique_lock lock(probe_mutex);
         probe_cv.wait(lock, [&]() {
             return active_probe_concurrency == 0;
+        });
+    }
+
+    void finishOneNonJoin()
+    {
+        std::unique_lock lock(non_join_mutex);
+        active_non_join_concurrency--;
+        if (active_non_join_concurrency == 0)
+        {
+            {
+                std::unique_lock lk(partitions_lock);
+                trySpillProbePartitions(true);
+                tryMarkProbeSpillFinish();
+                tryReleaseAllPartitions();
+            }
+            non_join_cv.notify_all();
+        }
+    }
+
+    void waitUntilAllNonJoinFinished()
+    {
+        std::unique_lock lock(non_join_mutex);
+        non_join_cv.wait(lock, [&]() {
+            return active_non_join_concurrency == 0;
         });
     }
 
@@ -477,9 +502,12 @@ private:
     size_t active_build_concurrency;
 
     mutable std::mutex probe_mutex;
+    mutable std::mutex non_join_mutex;
     std::condition_variable probe_cv;
+    std::condition_variable non_join_cv;
     size_t probe_concurrency;
     size_t active_probe_concurrency;
+    size_t active_non_join_concurrency;
 
 private:
     /// collators for the join key
@@ -506,9 +534,7 @@ private:
 
     std::list<size_t> spilled_partition_indexes;
 
-    BlocksList probe_blocks;
-
-    bool enable_join_spill;
+    std::list<std::tuple<size_t, Block>> probe_partition_blocks;
 
     size_t restore_stream_index;
 
@@ -629,6 +655,7 @@ private:
 struct ProbeProcessInfo
 {
     Block block;
+    size_t partition_index;
     UInt64 max_block_size;
     size_t start_row;
     size_t end_row;
@@ -638,7 +665,7 @@ struct ProbeProcessInfo
         : max_block_size(max_block_size_)
         , all_rows_joined_finish(true){};
 
-    void resetBlock(Block && block_);
+    void resetBlock(Block && block_, size_t partition_index_ = 0);
     void updateStartRow();
 };
 

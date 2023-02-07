@@ -119,7 +119,6 @@ PhysicalPlanNodePtr PhysicalJoin::build(
     size_t max_block_size_for_cross_join = settings.max_block_size;
     size_t max_spilled_size_per_spill = settings.max_spilled_size_per_spill;
     size_t max_join_bytes = settings.max_join_bytes;
-    bool enable_join_spill = settings.enable_join_spill;
     fiu_do_on(FailPoints::minimum_block_size_for_cross_join, { max_block_size_for_cross_join = 1; });
 
     JoinPtr join_ptr = std::make_shared<Join>(
@@ -139,7 +138,6 @@ PhysicalPlanNodePtr PhysicalJoin::build(
         max_block_size_for_cross_join,
         match_helper_name,
         max_spilled_size_per_spill,
-        enable_join_spill,
         max_join_bytes,
         context.getTemporaryPath(),
         context.getFileProvider());

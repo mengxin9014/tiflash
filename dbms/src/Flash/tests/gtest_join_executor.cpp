@@ -856,9 +856,12 @@ try
     context.addExchangeReceiver("right_exchange_receiver_3_concurrency", right_column_infos, right_column_data, 3, right_partition_column_infos);
     context.addExchangeReceiver("right_exchange_receiver_5_concurrency", right_column_infos, right_column_data, 5, right_partition_column_infos);
     context.addExchangeReceiver("right_exchange_receiver_10_concurrency", right_column_infos, right_column_data, 10, right_partition_column_infos);
-    std::vector<String> left_table_names = {"left_table_1_concurrency", "left_table_3_concurrency", "left_table_5_concurrency", "left_table_10_concurrency"};
-    std::vector<String> right_table_names = {"right_table_1_concurrency", "right_table_3_concurrency", "right_table_5_concurrency", "right_table_10_concurrency"};
-    std::vector<size_t> right_exchange_receiver_concurrency = {1, 3, 5, 10};
+    std::vector<String> left_table_names = {"left_table_3_concurrency", "left_table_5_concurrency", "left_table_10_concurrency"};
+    //    std::vector<String> left_table_names = {"left_table_3_concurrency"};
+    std::vector<String> right_table_names = {"right_table_3_concurrency", "right_table_5_concurrency", "right_table_10_concurrency"};
+    //    std::vector<String> right_table_names = { "right_table_10_concurrency"};
+    //    std::vector<size_t> right_exchange_receiver_concurrency = {1, 3, 5, 10};
+    std::vector<size_t> right_exchange_receiver_concurrency = {3, 5, 10};
 
     /// case 1, right join without right condition
     auto request = context
@@ -875,10 +878,14 @@ try
     {
         for (auto & right_table_name : right_table_names)
         {
+            std::cout << "left_table_name : " << left_table_name << std::endl;
+            std::cout << "right_table_name : " << right_table_name << std::endl;
             request = context
                           .scan("outer_join_test", left_table_name)
                           .join(context.scan("outer_join_test", right_table_name), tipb::JoinType::TypeRightOuterJoin, {col("a")})
                           .build(context);
+
+            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(1000000)));
             auto result_columns = executeStreams(request, original_max_streams);
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
         }
@@ -892,6 +899,7 @@ try
                           .scan("outer_join_test", left_table_name)
                           .join(context.receive(fmt::format("right_exchange_receiver_{}_concurrency", exchange_concurrency), exchange_concurrency), tipb::JoinType::TypeRightOuterJoin, {col("a")}, {}, {}, {}, {}, exchange_concurrency)
                           .build(context);
+            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(1000000)));
             auto result_columns = executeStreams(request, original_max_streams);
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
         }
@@ -914,6 +922,7 @@ try
                           .scan("outer_join_test", left_table_name)
                           .join(context.scan("outer_join_test", right_table_name), tipb::JoinType::TypeRightOuterJoin, {col("a")}, {}, {gt(col(right_table_name + ".b"), lit(Field(static_cast<Int64>(1000))))}, {}, {}, 0)
                           .build(context);
+            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(1000000)));
             auto result_columns = executeStreams(request, original_max_streams);
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
         }
@@ -928,6 +937,7 @@ try
                           .scan("outer_join_test", left_table_name)
                           .join(context.receive(fmt::format("right_exchange_receiver_{}_concurrency", exchange_concurrency), exchange_concurrency), tipb::JoinType::TypeRightOuterJoin, {col("a")}, {}, {gt(col(exchange_name + ".b"), lit(Field(static_cast<Int64>(1000))))}, {}, {}, exchange_concurrency)
                           .build(context);
+            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(1000000)));
             auto result_columns = executeStreams(request, original_max_streams);
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
         }

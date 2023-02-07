@@ -130,7 +130,6 @@ Join::Join(
     size_t max_block_size_,
     const String & match_helper_name,
     size_t max_spilled_size_per_spill_,
-    bool enable_join_spill_,
     size_t max_join_bytes_,
     String tmp_path_,
     FileProviderPtr file_provider_,
@@ -154,7 +153,6 @@ Join::Join(
     , other_condition_ptr(other_condition_ptr_)
     , original_strictness(strictness)
     , max_block_size_for_cross_join(max_block_size_)
-    , enable_join_spill(enable_join_spill_)
     , restore_stream_index(0)
     , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
@@ -557,7 +555,6 @@ std::shared_ptr<Join> Join::createRestoreJoin()
         max_block_size_for_cross_join,
         match_helper_name,
         max_spilled_size_per_spill,
-        enable_join_spill,
         max_join_bytes,
         tmp_path,
         file_provider,
@@ -588,7 +585,7 @@ void Join::initProbe(const Block & sample_block, size_t probe_concurrency_)
     setProbeConcurrency(probe_concurrency_);
     probe_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_{}_probe", log->identifier(), restore_round), max_spilled_size_per_spill, file_provider),
                                               false,
-                                              probe_concurrency_,
+                                              build_concurrency,
                                               sample_block,
                                               log);
 }
@@ -781,13 +778,19 @@ void insertFromBlockImplType(
     size_t stream_index,
     size_t insert_concurrency,
     Arena & pool,
-    bool enable_fine_grained_shuffle)
+    bool enable_fine_grained_shuffle,
+    bool enable_join_spill)
 {
     if (null_map)
     {
-        if (insert_concurrency > 1 && !enable_fine_grained_shuffle)
+        if (insert_concurrency > 1 && !enable_fine_grained_shuffle && !enable_join_spill)
         {
             insertFromBlockImplTypeCaseWithLock<STRICTNESS, KeyGetter, Map, true>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
+        }
+        else if (enable_join_spill)
+        {
+            std::lock_guard lk(map.getSegmentMutex(stream_index));
+            insertFromBlockImplTypeCase<STRICTNESS, KeyGetter, Map, true>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
         }
         else
         {
@@ -798,9 +801,14 @@ void insertFromBlockImplType(
     }
     else
     {
-        if (insert_concurrency > 1 && !enable_fine_grained_shuffle)
+        if (insert_concurrency > 1 && !enable_fine_grained_shuffle && !enable_join_spill)
         {
             insertFromBlockImplTypeCaseWithLock<STRICTNESS, KeyGetter, Map, false>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
+        }
+        else if (enable_join_spill)
+        {
+            std::lock_guard lk(map.getSegmentMutex(stream_index));
+            insertFromBlockImplTypeCase<STRICTNESS, KeyGetter, Map, false>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
         }
         else
         {
@@ -825,7 +833,8 @@ void insertFromBlockImpl(
     size_t stream_index,
     size_t insert_concurrency,
     Arena & pool,
-    bool enable_fine_grained_shuffle)
+    bool enable_fine_grained_shuffle,
+    bool enable_join_spill)
 {
     switch (type)
     {
@@ -848,7 +857,8 @@ void insertFromBlockImpl(
             stream_index,                                                                                                                      \
             insert_concurrency,                                                                                                                \
             pool,                                                                                                                              \
-            enable_fine_grained_shuffle);                                                                                                      \
+            enable_fine_grained_shuffle,                                                                                                       \
+            enable_join_spill);                                                                                                                \
         break;
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
@@ -936,8 +946,6 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
             }
             insertBlockToBuildPartition(dispatch_block, i);
             trySpillBuildPartition(i, false);
-            //                if (max_join_bytes && total_input_build_bytes > max_join_bytes)
-            //            if (join_memory_info.getTotalBytes() > 80 && restore_round == 0)
             if (max_join_bytes && join_memory_info.getTotalBytes() > max_join_bytes)
             {
                 trySpillBuildPartitions(true);
@@ -953,7 +961,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
 
             stored_block = &(partitions[i].build_partition.blocks.back());
         }
-        insertFromBlockInternal(stored_block, stream_index);
+        insertFromBlockInternal(stored_block, max_join_bytes ? i : stream_index);
     }
 }
 
@@ -1031,22 +1039,24 @@ void Join::insertFromBlockInternal(Block * stored_block, size_t stream_index)
         }
     }
 
+    bool enable_join_spill = max_join_bytes;
+
     if (!isCrossJoin(kind))
     {
         /// Fill the hash table.
         if (!getFullness(kind))
         {
             if (strictness == ASTTableJoin::Strictness::Any)
-                insertFromBlockImpl<ASTTableJoin::Strictness::Any>(type, maps_any, rows, key_columns, key_sizes, collators, stored_block, null_map, nullptr, stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle);
+                insertFromBlockImpl<ASTTableJoin::Strictness::Any>(type, maps_any, rows, key_columns, key_sizes, collators, stored_block, null_map, nullptr, stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle, enable_join_spill);
             else
-                insertFromBlockImpl<ASTTableJoin::Strictness::All>(type, maps_all, rows, key_columns, key_sizes, collators, stored_block, null_map, nullptr, stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle);
+                insertFromBlockImpl<ASTTableJoin::Strictness::All>(type, maps_all, rows, key_columns, key_sizes, collators, stored_block, null_map, nullptr, stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle, enable_join_spill);
         }
         else
         {
             if (strictness == ASTTableJoin::Strictness::Any)
-                insertFromBlockImpl<ASTTableJoin::Strictness::Any>(type, maps_any_full, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map[stream_index].get(), stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle);
+                insertFromBlockImpl<ASTTableJoin::Strictness::Any>(type, maps_any_full, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map[stream_index].get(), stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle, enable_join_spill);
             else
-                insertFromBlockImpl<ASTTableJoin::Strictness::All>(type, maps_all_full, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map[stream_index].get(), stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle);
+                insertFromBlockImpl<ASTTableJoin::Strictness::All>(type, maps_all_full, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map[stream_index].get(), stream_index, getBuildConcurrencyInternal(), *pools[stream_index], enable_fine_grained_shuffle, enable_join_spill);
         }
     }
 }
@@ -1236,6 +1246,7 @@ void NO_INLINE joinBlockImplTypeCase(
     const TiDB::TiDBCollators & collators,
     bool enable_fine_grained_shuffle,
     size_t fine_grained_shuffle_count,
+    bool enable_join_spill,
     ProbeProcessInfo & probe_process_info)
 {
     if (rows == 0)
@@ -1296,7 +1307,11 @@ void NO_INLINE joinBlockImplTypeCase(
             }
 
             size_t segment_index = 0;
-            if (enable_fine_grained_shuffle)
+            if (enable_join_spill)
+            {
+                segment_index = probe_process_info.partition_index;
+            }
+            else if (enable_fine_grained_shuffle)
             {
                 RUNTIME_CHECK(segment_size > 0);
                 /// Need to calculate the correct segment_index so that rows with same key will map to the same segment_index both in Build and Prob
@@ -1374,6 +1389,7 @@ void joinBlockImplType(
     const std::vector<size_t> & right_indexes,
     const TiDB::TiDBCollators & collators,
     bool enable_fine_grained_shuffle,
+    bool enable_join_spill,
     size_t fine_grained_shuffle_count,
     ProbeProcessInfo & probe_process_info)
 {
@@ -1392,6 +1408,7 @@ void joinBlockImplType(
             collators,
             enable_fine_grained_shuffle,
             fine_grained_shuffle_count,
+            enable_join_spill,
             probe_process_info);
     else
         joinBlockImplTypeCase<KIND, STRICTNESS, KeyGetter, Map, false>(
@@ -1408,6 +1425,7 @@ void joinBlockImplType(
             collators,
             enable_fine_grained_shuffle,
             fine_grained_shuffle_count,
+            enable_join_spill,
             probe_process_info);
 }
 } // namespace
@@ -1733,6 +1751,7 @@ void Join::joinBlockImpl(Block & block, const Maps & maps, ProbeProcessInfo & pr
     if (strictness == ASTTableJoin::Strictness::All)
         offsets_to_replicate = std::make_unique<IColumn::Offsets>(rows);
 
+    bool enable_spill_join = max_join_bytes;
     switch (type)
     {
 #define M(TYPE)                                                                                                                                \
@@ -1750,6 +1769,7 @@ void Join::joinBlockImpl(Block & block, const Maps & maps, ProbeProcessInfo & pr
             right_indexes,                                                                                                                     \
             collators,                                                                                                                         \
             enable_fine_grained_shuffle,                                                                                                       \
+            enable_spill_join,                                                                                                                 \
             fine_grained_shuffle_count,                                                                                                        \
             probe_process_info);                                                                                                               \
         break;
@@ -2346,10 +2366,10 @@ void Join::insertBlockToProbePartition(Block & block, size_t partition_index)
     partitions[partition_index].probe_partition.blocks.push_back(block);
 }
 
-void Join::insertToProbeBlocksWithLock(Block & block)
+void Join::insertToProbeBlocksWithLock(Block & block, size_t partiton_index)
 {
     std::unique_lock probe_blocks_lk(probe_blocks_lock);
-    probe_blocks.push_back(block);
+    probe_partition_blocks.push_back({partiton_index, block});
 }
 
 void Join::tryMarkBuildSpillFinishWithLock()
@@ -2403,10 +2423,16 @@ bool Join::getPartitionSpilled(size_t partition_index)
     return partitions[partition_index].spill;
 }
 
-Block Join::getOneProbeBlockWithLock()
+std::tuple<size_t, Block> Join::getOneProbeBlockWithLock()
 {
     std::unique_lock lk(probe_blocks_lock);
-    return popBlocksListFront(probe_blocks);
+    if (!probe_partition_blocks.empty())
+    {
+        auto partition_block = probe_partition_blocks.front();
+        probe_partition_blocks.pop_front();
+        return partition_block;
+    }
+    return {0, {}};
 }
 
 bool Join::isPartitionSpilledWithLock(size_t partition_index)
@@ -2465,13 +2491,13 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     }
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
-    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, build_concurrency);
+    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
     restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
     auto build_stream = get_back_stream(restore_build_streams);
     auto probe_stream = get_back_stream(restore_probe_streams);
     restore_join = createRestoreJoin();
-    restore_join->initBuild(build_stream->getHeader(), build_concurrency);
+    restore_join->initBuild(build_stream->getHeader(), probe_concurrency);
     restore_join->initProbe(probe_stream->getHeader(), probe_concurrency);
     return {restore_join, restore_stream_index, build_stream, probe_stream};
 }
@@ -2491,7 +2517,7 @@ void Join::dispatchProbeBlock(Block & block)
         }
         if (partition_blocks[i].rows())
         {
-            insertToProbeBlocksWithLock(partition_blocks[i]);
+            insertToProbeBlocksWithLock(partition_blocks[i], i);
         }
     }
     trySpillProbePartitionsWithLock(false);
@@ -2518,12 +2544,19 @@ void Join::trySpillBuildPartition(size_t partition_index, bool force)
 
 void Join::tryReleaseBuildPartition(size_t partition_index)
 {
-    partitions[partition_index].build_partition.blocks.clear();
-    partitions[partition_index].build_partition.original_blocks.clear();
     join_memory_info.subBytes(partitions[partition_index].build_partition.bytes);
     join_memory_info.subRows(partitions[partition_index].build_partition.rows);
     partitions[partition_index].build_partition.bytes = 0;
     partitions[partition_index].build_partition.rows = 0;
+    partitions[partition_index].build_partition.blocks.clear();
+    partitions[partition_index].build_partition.original_blocks.clear();
+    pools[partition_index].reset();
+    pools[partition_index] = std::make_shared<Arena>();
+    if (getFullness(kind))
+    {
+        rows_not_inserted_to_map[partition_index].reset();
+        rows_not_inserted_to_map[partition_index] = std::make_unique<RowRefList>();
+    }
 }
 
 void Join::tryReleaseProbePartition(size_t partition_index)
@@ -2561,9 +2594,10 @@ void Join::trySpillProbePartitions(bool force)
     }
 }
 
-void ProbeProcessInfo::resetBlock(Block && block_)
+void ProbeProcessInfo::resetBlock(Block && block_, size_t partition_index_)
 {
     block = std::move(block_);
+    partition_index = partition_index_;
     start_row = 0;
     end_row = 0;
     all_rows_joined_finish = false;
