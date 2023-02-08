@@ -251,14 +251,22 @@ public:
 
     const Names & getLeftJoinKeys() const { return key_names_left; }
 
+    void setInitActiveBuildConcurrency()
+    {
+        std::unique_lock lock(build_probe_mutex);
+        active_build_concurrency = getBuildConcurrencyInternal();
+    }
+    void finishOneBuild();
+    void waitUntilAllBuildFinished() const;
+
     size_t getProbeConcurrency() const
     {
-        std::unique_lock lock(probe_mutex);
+        std::unique_lock lock(build_probe_mutex);
         return probe_concurrency;
     }
     void setProbeConcurrency(size_t concurrency)
     {
-        std::unique_lock lock(probe_mutex);
+        std::unique_lock lock(build_probe_mutex);
         probe_concurrency = concurrency;
         active_probe_concurrency = probe_concurrency;
         active_non_join_concurrency = probe_concurrency;
@@ -318,6 +326,7 @@ public:
         return getBuildConcurrencyInternal();
     }
 
+    void meetError(const String & error_message);
     void finishOneBuild()
     {
         std::unique_lock lock(build_mutex);
@@ -497,17 +506,22 @@ private:
     const Names key_names_right;
 
     mutable std::mutex build_mutex;
-    std::condition_variable build_cv;
+    mutable std::mutex build_probe_mutex;
+
+    mutable std::condition_variable build_cv;
     size_t build_concurrency;
     size_t active_build_concurrency;
 
     mutable std::mutex probe_mutex;
     mutable std::mutex non_join_mutex;
-    std::condition_variable probe_cv;
     std::condition_variable non_join_cv;
+    mutable std::condition_variable probe_cv;
     size_t probe_concurrency;
     size_t active_probe_concurrency;
     size_t active_non_join_concurrency;
+
+    bool meet_error = false;
+    String error_message;
 
 private:
     /// collators for the join key
@@ -571,10 +585,6 @@ private:
     Block sample_block_with_columns_to_add;
     /// Block with key columns in the same order they appear in the right-side table.
     Block sample_block_with_keys;
-
-    mutable std::mutex build_table_mutex;
-    mutable std::condition_variable build_table_cv;
-    BuildTableState build_table_state;
 
     const LoggerPtr log;
 

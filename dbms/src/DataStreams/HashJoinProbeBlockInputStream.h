@@ -65,6 +65,7 @@ private:
     };
 
     void readSuffixImpl() override;
+    void finishOneProbe();
 
     const LoggerPtr log;
     JoinPtr join;
@@ -72,13 +73,12 @@ private:
     UInt64 max_block_size;
     ProbeProcessInfo probe_process_info;
     BlockInputStreamPtr non_joined_stream;
-    SquashingHashJoinBlockTransform squashing_transform;
     ProbeStatus status{ProbeStatus::PROBE};
     size_t joined_rows = 0;
     size_t non_joined_rows = 0;
     std::shared_ptr<HashJoinProbeBlockInputStream> restore_probe_stream;
     std::list<JoinPtr> parents;
+    std::atomic<bool> probe_finished = false;
 };
-
 
 } // namespace DB
