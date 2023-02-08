@@ -147,6 +147,7 @@ Join::Join(
     , active_build_concurrency(0)
     , probe_concurrency(0)
     , active_probe_concurrency(0)
+    , active_non_join_concurrency(0)
     , collators(collators_)
     , left_filter_column(left_filter_column_)
     , right_filter_column(right_filter_column_)
@@ -158,7 +159,6 @@ Join::Join(
     , restore_stream_index(0)
     , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
-    , build_table_state(BuildTableState::SUCCEED)
     , log(Logger::get(req_id))
     , join_memory_info(join_memory_info_)
     , tmp_path(tmp_path_)
@@ -2110,17 +2110,6 @@ void Join::checkTypesOfKeys(const Block & block_left, const Block & block_right)
     }
 }
 
-void Join::finishOneProbe()
-{
-    std::unique_lock lock(build_probe_mutex);
-    if (active_probe_concurrency == 1)
-    {
-        FAIL_POINT_TRIGGER_EXCEPTION(FailPoints::exception_mpp_hash_probe);
-    }
-    --active_probe_concurrency;
-    if (active_probe_concurrency == 0)
-        probe_cv.notify_all();
-}
 void Join::finishOneBuild()
 {
     std::unique_lock lock(build_probe_mutex);
@@ -2130,7 +2119,45 @@ void Join::finishOneBuild()
     }
     --active_build_concurrency;
     if (active_build_concurrency == 0)
+    {
+        {
+            std::unique_lock lk(partitions_lock);
+            trySpillBuildPartitions(true);
+            tryMarkBuildSpillFinish();
+        }
         build_cv.notify_all();
+    }
+}
+
+void Join::waitUntilAllBuildFinished() const
+{
+    std::unique_lock lock(build_probe_mutex);
+    build_cv.wait(lock, [&]() {
+        return meet_error || active_build_concurrency == 0;
+    });
+    if (meet_error)
+        throw Exception(error_message);
+}
+
+void Join::finishOneProbe()
+{
+    std::unique_lock lock(build_probe_mutex);
+    if (active_probe_concurrency == 1)
+    {
+        FAIL_POINT_TRIGGER_EXCEPTION(FailPoints::exception_mpp_hash_probe);
+    }
+    --active_probe_concurrency;
+    if (active_probe_concurrency == 0)
+    {
+        if (!needReturnNonJoinedData())
+        {
+            std::unique_lock lk(partitions_lock);
+            trySpillProbePartitions(true);
+            tryMarkProbeSpillFinish();
+            tryReleaseAllPartitions();
+        }
+        probe_cv.notify_all();
+    }
 }
 
 void Join::waitUntilAllProbeFinished() const
@@ -2143,14 +2170,29 @@ void Join::waitUntilAllProbeFinished() const
         throw Exception(error_message);
 }
 
-void Join::waitUntilAllBuildFinished() const
+
+void Join::finishOneNonJoin()
 {
-    std::unique_lock lock(build_probe_mutex);
-    build_cv.wait(lock, [&]() {
-        return meet_error || active_build_concurrency == 0;
+    std::unique_lock lock(non_join_mutex);
+    active_non_join_concurrency--;
+    if (active_non_join_concurrency == 0)
+    {
+        {
+            std::unique_lock lk(partitions_lock);
+            trySpillProbePartitions(true);
+            tryMarkProbeSpillFinish();
+            tryReleaseAllPartitions();
+        }
+        non_join_cv.notify_all();
+    }
+}
+
+void Join::waitUntilAllNonJoinFinished() const
+{
+    std::unique_lock lock(non_join_mutex);
+    non_join_cv.wait(lock, [&]() {
+        return active_non_join_concurrency == 0;
     });
-    if (meet_error)
-        throw Exception(error_message);
 }
 
 Block Join::joinBlock(ProbeProcessInfo & probe_process_info) const
@@ -2413,12 +2455,6 @@ void Join::insertToProbeBlocksWithLock(Block & block, size_t partiton_index)
     probe_partition_blocks.push_back({partiton_index, block});
 }
 
-void Join::tryMarkBuildSpillFinishWithLock()
-{
-    std::unique_lock lk(partitions_lock);
-    tryMarkBuildSpillFinish();
-}
-
 void Join::tryMarkBuildSpillFinish()
 {
     if (!spilled_partition_indexes.empty())
@@ -2427,11 +2463,6 @@ void Join::tryMarkBuildSpillFinish()
     }
 }
 
-void Join::tryMarkProbeSpillFinishWithLock()
-{
-    std::unique_lock lk(partitions_lock);
-    tryMarkProbeSpillFinish();
-}
 
 void Join::tryMarkProbeSpillFinish()
 {
@@ -2439,18 +2470,6 @@ void Join::tryMarkProbeSpillFinish()
     {
         probe_spiller->finishSpill();
     }
-}
-
-void Join::trySpillBuildPartitionsWithLock(bool force)
-{
-    std::unique_lock lk(partitions_lock);
-    trySpillBuildPartitions(force);
-}
-
-void Join::trySpillBuildPartitionWithLock(size_t partition_index, bool force)
-{
-    std::unique_lock lk(partitions_lock);
-    trySpillBuildPartition(partition_index, force);
 }
 
 void Join::trySpillProbePartitionsWithLock(bool force)
@@ -2476,12 +2495,6 @@ std::tuple<size_t, Block> Join::getOneProbeBlockWithLock()
     return {0, {}};
 }
 
-bool Join::isPartitionSpilledWithLock(size_t partition_index)
-{
-    std::unique_lock lk(partitions_lock);
-    return isPartitionSpilled(partition_index);
-}
-
 bool Join::hasPartitionSpilledWithLock()
 {
     std::unique_lock lk(partitions_lock);
@@ -2491,17 +2504,6 @@ bool Join::hasPartitionSpilledWithLock()
 bool Join::hasPartitionSpilled()
 {
     return !spilled_partition_indexes.empty();
-}
-
-bool Join::hasRestoreStreams()
-{
-    return !restore_build_streams.empty() || !restore_probe_streams.empty();
-}
-
-bool Join::needRestore()
-{
-    std::unique_lock lk(partitions_lock);
-    return hasPartitionSpilled();
 }
 
 bool Join::isPartitionSpilled(size_t partition_index)
@@ -2537,8 +2539,14 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
     auto build_stream = get_back_stream(restore_build_streams);
     auto probe_stream = get_back_stream(restore_probe_streams);
+    if (restore_build_streams.empty())
+    {
+        restore_stream_index = 0;
+        spilled_partition_indexes.pop_front();
+    }
     restore_join = createRestoreJoin();
     restore_join->initBuild(build_stream->getHeader(), probe_concurrency);
+    restore_join->setInitActiveBuildConcurrency();
     restore_join->initProbe(probe_stream->getHeader(), probe_concurrency);
     return {restore_join, restore_stream_index, build_stream, probe_stream};
 }

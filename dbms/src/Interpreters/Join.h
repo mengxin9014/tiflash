@@ -202,35 +202,19 @@ public:
 
     void insertToProbeBlocksWithLock(Block & block, size_t partiton_index);
 
-    void tryMarkBuildSpillFinishWithLock();
-
     void tryMarkBuildSpillFinish();
-
-    void tryMarkProbeSpillFinishWithLock();
 
     void tryMarkProbeSpillFinish();
 
-    void trySpillBuildPartitionsWithLock(bool force);
-
-    void trySpillBuildPartitionWithLock(size_t partition_index, bool force);
-
     void trySpillProbePartitionsWithLock(bool force);
-
-    bool getPartitionSpilledWithLock(size_t partition_index);
 
     bool getPartitionSpilled(size_t partition_index);
 
     std::tuple<size_t, Block> getOneProbeBlockWithLock();
 
-    bool isPartitionSpilledWithLock(size_t partition_index);
-
     bool hasPartitionSpilledWithLock();
 
     bool hasPartitionSpilled();
-
-    bool hasRestoreStreams();
-
-    bool needRestore();
 
     bool isPartitionSpilled(size_t partition_index);
 
@@ -256,8 +240,6 @@ public:
         std::unique_lock lock(build_probe_mutex);
         active_build_concurrency = getBuildConcurrencyInternal();
     }
-    void finishOneBuild();
-    void waitUntilAllBuildFinished() const;
 
     size_t getProbeConcurrency() const
     {
@@ -272,53 +254,14 @@ public:
         active_non_join_concurrency = probe_concurrency;
     }
 
-    void finishOneProbe()
-    {
-        std::unique_lock lock(probe_mutex);
-        active_probe_concurrency--;
-        if (active_probe_concurrency == 0)
-        {
-            if (!needReturnNonJoinedData())
-            {
-                std::unique_lock lk(partitions_lock);
-                trySpillProbePartitions(true);
-                tryMarkProbeSpillFinish();
-                tryReleaseAllPartitions();
-            }
-            probe_cv.notify_all();
-        }
-    }
-    void waitUntilAllProbeFinished()
-    {
-        std::unique_lock lock(probe_mutex);
-        probe_cv.wait(lock, [&]() {
-            return active_probe_concurrency == 0;
-        });
-    }
+    void finishOneBuild();
+    void waitUntilAllBuildFinished() const;
 
-    void finishOneNonJoin()
-    {
-        std::unique_lock lock(non_join_mutex);
-        active_non_join_concurrency--;
-        if (active_non_join_concurrency == 0)
-        {
-            {
-                std::unique_lock lk(partitions_lock);
-                trySpillProbePartitions(true);
-                tryMarkProbeSpillFinish();
-                tryReleaseAllPartitions();
-            }
-            non_join_cv.notify_all();
-        }
-    }
+    void finishOneProbe();
+    void waitUntilAllProbeFinished() const;
 
-    void waitUntilAllNonJoinFinished()
-    {
-        std::unique_lock lock(non_join_mutex);
-        non_join_cv.wait(lock, [&]() {
-            return active_non_join_concurrency == 0;
-        });
-    }
+    void finishOneNonJoin();
+    void waitUntilAllNonJoinFinished() const;
 
     size_t getBuildConcurrency() const
     {
@@ -327,38 +270,8 @@ public:
     }
 
     void meetError(const String & error_message);
-    void finishOneBuild()
-    {
-        std::unique_lock lock(build_mutex);
-        active_build_concurrency--;
-        if (active_build_concurrency == 0)
-        {
-            {
-                std::unique_lock lk(partitions_lock);
-                trySpillBuildPartitions(true);
-                tryMarkBuildSpillFinish();
-            }
-            build_cv.notify_all();
-        }
-    }
-
-    void waitUntilAllBuildFinished()
-    {
-        std::unique_lock lock(build_mutex);
-        build_cv.wait(lock, [&]() {
-            return active_build_concurrency == 0;
-        });
-    }
 
     std::mutex external_lock;
-
-    enum BuildTableState
-    {
-        WAITING,
-        FAILED,
-        SUCCEED
-    };
-    void setBuildTableState(BuildTableState state_);
 
     /// Reference to the row in block.
     struct RowRef
@@ -472,7 +385,6 @@ public:
         size_t rows{0};
         size_t bytes{0};
     };
-    using BuildPartitions = std::vector<BuildPartition>;
 
     struct ProbePartition
     {
@@ -480,7 +392,6 @@ public:
         size_t rows{0};
         size_t bytes{0};
     };
-    using ProbePartitions = std::vector<ProbePartition>;
 
     struct JoinPartition
     {
@@ -514,7 +425,7 @@ private:
 
     mutable std::mutex probe_mutex;
     mutable std::mutex non_join_mutex;
-    std::condition_variable non_join_cv;
+    mutable std::condition_variable non_join_cv;
     mutable std::condition_variable probe_cv;
     size_t probe_concurrency;
     size_t active_probe_concurrency;
