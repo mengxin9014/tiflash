@@ -2197,7 +2197,7 @@ void Join::waitUntilAllNonJoinFinished() const
 
 Block Join::joinBlock(ProbeProcessInfo & probe_process_info) const
 {
-    waitUntilAllBuildFinished();
+    //    waitUntilAllBuildFinished();
 
     std::shared_lock lock(rwlock);
 
@@ -2506,11 +2506,6 @@ bool Join::hasPartitionSpilled()
     return !spilled_partition_indexes.empty();
 }
 
-bool Join::isPartitionSpilled(size_t partition_index)
-{
-    return partitions[partition_index].spill;
-}
-
 std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestoreStream()
 {
     std::unique_lock lk(partitions_lock);
@@ -2561,6 +2556,11 @@ void Join::dispatchProbeBlock(Block & block)
             if (getPartitionSpilled(i))
             {
                 insertBlockToProbePartition(partition_blocks[i], i);
+                trySpillProbePartition(i, false);
+                if (max_join_bytes && join_memory_info.getTotalBytes() > max_join_bytes)
+                {
+                    trySpillProbePartitions(true);
+                }
                 continue;
             }
         }
@@ -2570,14 +2570,6 @@ void Join::dispatchProbeBlock(Block & block)
         }
     }
     trySpillProbePartitionsWithLock(false);
-}
-
-void Join::trySpillBuildPartitions(bool force)
-{
-    for (size_t i = 0; i < partitions.size(); ++i)
-    {
-        trySpillBuildPartition(i, force);
-    }
 }
 
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
@@ -2590,6 +2582,32 @@ void Join::trySpillBuildPartition(size_t partition_index, bool force)
         tryReleaseBuildPartition(partition_index);
     }
 }
+
+void Join::trySpillBuildPartitions(bool force)
+{
+    for (size_t i = 0; i < partitions.size(); ++i)
+    {
+        trySpillBuildPartition(i, force);
+    }
+}
+
+void Join::trySpillProbePartition(size_t partition_index, bool force)
+{
+    if (partitions[partition_index].spill && (force || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
+    {
+        probe_spiller->spillBlocks(partitions[partition_index].probe_partition.blocks, partition_index);
+        tryReleaseProbePartition(partition_index);
+    }
+}
+
+void Join::trySpillProbePartitions(bool force)
+{
+    for (size_t i = 0; i < partitions.size(); ++i)
+    {
+        trySpillProbePartition(i, force);
+    }
+}
+
 
 void Join::tryReleaseBuildPartition(size_t partition_index)
 {
@@ -2611,7 +2629,6 @@ void Join::tryReleaseBuildPartition(size_t partition_index)
 void Join::tryReleaseProbePartition(size_t partition_index)
 {
     partitions[partition_index].probe_partition.blocks.clear();
-    partitions[partition_index].probe_partition.blocks.clear();
     join_memory_info.subBytes(partitions[partition_index].probe_partition.bytes);
     join_memory_info.subRows(partitions[partition_index].probe_partition.rows);
     partitions[partition_index].probe_partition.bytes = 0;
@@ -2624,22 +2641,6 @@ void Join::tryReleaseAllPartitions()
     {
         tryReleaseBuildPartition(i);
         tryReleaseProbePartition(i);
-    }
-}
-
-void Join::trySpillProbePartitions(bool force)
-{
-    for (size_t i = 0; i < partitions.size(); ++i)
-    {
-        if (partitions[i].spill && (force || partitions[i].probe_partition.bytes >= max_spilled_size_per_spill))
-        {
-            probe_spiller->spillBlocks(partitions[i].probe_partition.blocks, i);
-            partitions[i].probe_partition.blocks.clear();
-            join_memory_info.subBytes(partitions[i].probe_partition.bytes);
-            join_memory_info.subRows(partitions[i].probe_partition.rows);
-            partitions[i].probe_partition.bytes = 0;
-            partitions[i].probe_partition.rows = 0;
-        }
     }
 }
 

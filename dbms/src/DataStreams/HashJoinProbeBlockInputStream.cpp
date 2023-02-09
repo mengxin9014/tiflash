@@ -129,6 +129,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         {
         case ProbeStatus::PROBE:
         {
+            join->waitUntilAllBuildFinished();
             if (probe_process_info.all_rows_joined_finish)
             {
                 auto [partition_index, block] = join->getOneProbeBlockWithLock();
@@ -142,15 +143,15 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                         break;
                     }
 
-                    std::cout << "finish probe, index : " << probe_index << " round : " << join->restore_round << std::endl
-                              << std::flush;
+                    //                    std::cout << "finish probe, index : " << probe_index << " round : " << join->restore_round << std::endl
+                    //                              << std::flush;
                     finishOneProbe();
 
 
                     if (join->needReturnNonJoinedData())
                     {
-                        std::cout << "needReturnNonJoinedData, index : " << probe_index << " round : " << join->restore_round << std::endl
-                                  << std::flush;
+                        //                        std::cout << "needReturnNonJoinedData, index : " << probe_index << " round : " << join->restore_round << std::endl
+                        //                                  << std::flush;
                         status = ProbeStatus::WAIT_FOR_READ_NON_JOINED_DATA;
                     }
                     else
@@ -170,8 +171,8 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             return ret;
         }
         case ProbeStatus::WAIT_FOR_READ_NON_JOINED_DATA:
-            std::cout << "WAIT_FOR_READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
-                      << std::flush;
+            //            std::cout << "WAIT_FOR_READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                      << std::flush;
             join->waitUntilAllProbeFinished();
             status = ProbeStatus::READ_NON_JOINED_DATA;
             non_joined_stream->readPrefix();
@@ -182,17 +183,18 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             //                      << std::flush;
             auto block = non_joined_stream->read();
             non_joined_rows += block.rows();
+            //            std::cout<<fmt::format("non join rows : {}, all rows : {}, index : {}", block.rows(), non_joined_rows, probe_index)<<std::endl;
             //            std::cout << "nonjoin rows : " << block.rows() << ", index : " << probe_index << " round : " << join->restore_round << std::endl;
             if (!block)
             {
-                std::cout << "finishOneNonJoin, index : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
+                //                std::cout << "finishOneNonJoin, index : " << probe_index << " round : " << join->restore_round << std::endl
+                //                          << std::flush;
                 non_joined_stream->readSuffix();
-                std::cout << "non_joined_stream readSuffix, index : " << probe_index << " round : " << join->restore_round << std::endl;
+                //                std::cout << "non_joined_stream readSuffix, index : " << probe_index << " round : " << join->restore_round << std::endl;
                 join->finishOneNonJoin();
-                std::cout << "after finishOneNonJoin, index : " << probe_index << " round : " << join->restore_round << std::endl;
+                //                std::cout << "after finishOneNonJoin, index : " << probe_index << " round : " << join->restore_round << std::endl;
                 join->waitUntilAllNonJoinFinished();
-                std::cout << "waitUntilAllNonJoinFinished, index : " << probe_index << " round : " << join->restore_round << std::endl;
+                //                std::cout << "waitUntilAllNonJoinFinished, index : " << probe_index << " round : " << join->restore_round << std::endl;
                 status = ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE;
                 break;
             }
@@ -203,24 +205,24 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         }
         case ProbeStatus::BUILD_RESTORE_PARTITION:
         {
-            {
-                std::unique_lock lk(join->external_lock);
-                std::cout << "BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
-            }
+            //            {
+            //                std::unique_lock lk(join->external_lock);
+            //                std::cout << "BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                          << std::flush;
+            //            }
             auto [restore_join, stream_index, build_stream, probe_stream] = join->getOneRestoreStream();
-            {
-                std::unique_lock lk(join->external_lock);
-                std::cout << "push to parent, index : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
-                for (auto & parent : parents)
-                {
-                    std::cout << " " << parent << std::endl
-                              << std::flush;
-                }
-                std::cout << "size : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
-            }
+            //            {
+            //                std::unique_lock lk(join->external_lock);
+            //                std::cout << "push to parent, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                          << std::flush;
+            //                for (auto & parent : parents)
+            //                {
+            //                    std::cout << " " << parent << std::endl
+            //                              << std::flush;
+            //                }
+            //                std::cout << "size : " << probe_index << " round : " << join->restore_round << std::endl
+            //                          << std::flush;
+            //            }
             parents.push_back(join);
             join = restore_join;
             probe_finished = false;
@@ -242,40 +244,23 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
 
 
             //
-            {
-                std::unique_lock lk(join->external_lock);
-                std::cout << "waitUntilAllBuildFinished, index : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
-            }
-            join->waitUntilAllBuildFinished();
-            //            probe_process_info.all_rows_joined_finish = true;
-            status = ProbeStatus::PROBE_RESTORE_PARTITION;
-            break;
-        }
-        case ProbeStatus::PROBE_RESTORE_PARTITION:
-        {
-            //            Block ret = readImpl();
-            //            if (likely(ret))
             //            {
-            //                {
-            //                    std::unique_lock lk(join->external_lock);
-            //                    std::cout << "return rows, index : " << probe_index << " round : " << join->restore_round << std::endl
-            //                              << std::flush;
-            //                }
-            //
-            //                return ret;
+            //                std::unique_lock lk(join->external_lock);
+            //                std::cout << "waitUntilAllBuildFinished, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                          << std::flush;
             //            }
+            //            join->waitUntilAllBuildFinished();
+            //            probe_process_info.all_rows_joined_finish = true;
             status = ProbeStatus::PROBE;
-            //            status = ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE;
             break;
         }
         case ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE:
         {
-            {
-                std::unique_lock lk(join->external_lock);
-                std::cout << "JUDGE, index : " << probe_index << " round : " << join->restore_round << std::endl
-                          << std::flush;
-            }
+            //            {
+            //                std::unique_lock lk(join->external_lock);
+            //                std::cout << "JUDGE, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                          << std::flush;
+            //            }
             join->waitUntilAllProbeFinished();
             //            {
             //                std::unique_lock lk(join->external_lock);
@@ -285,32 +270,32 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             //            join->waitUntilAllProbeFinished();
             if (join->hasPartitionSpilledWithLock())
             {
-                {
-                    std::unique_lock lk(join->external_lock);
-                    std::cout << "needRestore ->  BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
-                              << std::flush;
-                }
+                //                {
+                //                    std::unique_lock lk(join->external_lock);
+                //                    std::cout << "needRestore ->  BUILD_RESTORE_PARTITION, index : " << probe_index << " round : " << join->restore_round << std::endl
+                //                              << std::flush;
+                //                }
                 status = ProbeStatus::BUILD_RESTORE_PARTITION;
             }
             else if (!parents.empty())
             {
                 {
                     std::unique_lock lk(join->external_lock);
-                    std::cout << "get Parents, index : " << probe_index << " round : " << join->restore_round << std::endl
-                              << std::flush;
-                    std::cout << "parent, round : " << parents.back()->restore_round << std::endl
-                              << std::flush;
+                    //                    std::cout << "get Parents, index : " << probe_index << " round : " << join->restore_round << std::endl
+                    //                              << std::flush;
+                    //                    std::cout << "parent, round : " << parents.back()->restore_round << std::endl
+                    //                              << std::flush;
                 }
                 join = parents.back();
                 parents.pop_back();
             }
             else
             {
-                {
-                    std::unique_lock lk(join->external_lock);
-                    std::cout << "FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
-                              << std::flush;
-                }
+                //                {
+                //                    std::unique_lock lk(join->external_lock);
+                //                    std::cout << "FINISHED, index : " << probe_index << " round : " << join->restore_round << std::endl
+                //                              << std::flush;
+                //                }
                 status = ProbeStatus::FINISHED;
             }
             break;

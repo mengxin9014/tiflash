@@ -216,8 +216,6 @@ public:
 
     bool hasPartitionSpilled();
 
-    bool isPartitionSpilled(size_t partition_index);
-
     std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> getOneRestoreStream();
 
     void dispatchProbeBlock(Block & block);
@@ -562,13 +560,15 @@ private:
 
     IColumn::Selector hashToSelector(const WeakHash32 & hash) const;
     IColumn::Selector selectDispatchBlock(const Strings & key_columns_names, const Block & from_block);
-    void trySpillBuildPartitions(bool force);
+
     void trySpillBuildPartition(size_t partition_index, bool force);
+    void trySpillBuildPartitions(bool force);
+    void trySpillProbePartition(size_t partition_index, bool force);
+    void trySpillProbePartitions(bool force);
+
     void tryReleaseBuildPartition(size_t partition_index);
     void tryReleaseProbePartition(size_t partition_index);
     void tryReleaseAllPartitions();
-
-    void trySpillProbePartitions(bool force);
 
     void markMostMemoryUsedPartitionSpill();
 };
