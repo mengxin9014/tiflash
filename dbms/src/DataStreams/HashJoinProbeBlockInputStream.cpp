@@ -132,21 +132,35 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             join->waitUntilAllBuildFinished();
             if (probe_process_info.all_rows_joined_finish)
             {
-                auto [partition_index, block] = join->getOneProbeBlockWithLock();
+                size_t partition_index = 0;
+                Block block;
+
+                if (!join->isEnableSpill())
+                {
+                    block = children.back()->read();
+                }
+                else
+                {
+                    auto partition_block = join->getOneProbeBlockWithLock();
+                    partition_index = std::get<0>(partition_block);
+                    block = std::get<1>(partition_block);
+                }
 
                 if (!block)
                 {
-                    block = children.back()->read();
-                    if (block)
+                    if (join->isEnableSpill())
                     {
-                        join->dispatchProbeBlock(block);
-                        break;
+                        block = children.back()->read();
+                        if (block)
+                        {
+                            join->dispatchProbeBlock(block);
+                            break;
+                        }
                     }
 
                     //                    std::cout << "finish probe, index : " << probe_index << " round : " << join->restore_round << std::endl
                     //                              << std::flush;
                     finishOneProbe();
-
 
                     if (join->needReturnNonJoinedData())
                     {
@@ -171,16 +185,16 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             return ret;
         }
         case ProbeStatus::WAIT_FOR_READ_NON_JOINED_DATA:
-            //            std::cout << "WAIT_FOR_READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
-            //                      << std::flush;
+            //                        std::cout << "WAIT_FOR_READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                                  << std::flush;
             join->waitUntilAllProbeFinished();
             status = ProbeStatus::READ_NON_JOINED_DATA;
             non_joined_stream->readPrefix();
             break;
         case ProbeStatus::READ_NON_JOINED_DATA:
         {
-            //            std::cout << "READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
-            //                      << std::flush;
+            //                        std::cout << "READ_NON_JOINED_DATA, index : " << probe_index << " round : " << join->restore_round << std::endl
+            //                                  << std::flush;
             auto block = non_joined_stream->read();
             non_joined_rows += block.rows();
             //            std::cout<<fmt::format("non join rows : {}, all rows : {}, index : {}", block.rows(), non_joined_rows, probe_index)<<std::endl;
@@ -191,6 +205,11 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                 //                          << std::flush;
                 non_joined_stream->readSuffix();
                 //                std::cout << "non_joined_stream readSuffix, index : " << probe_index << " round : " << join->restore_round << std::endl;
+                if (!join->isEnableSpill())
+                {
+                    status = ProbeStatus::FINISHED;
+                    break;
+                }
                 join->finishOneNonJoin();
                 //                std::cout << "after finishOneNonJoin, index : " << probe_index << " round : " << join->restore_round << std::endl;
                 join->waitUntilAllNonJoinFinished();
@@ -256,6 +275,11 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         }
         case ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE:
         {
+            if (!join->isEnableSpill())
+            {
+                status = ProbeStatus::FINISHED;
+                break;
+            }
             //            {
             //                std::unique_lock lk(join->external_lock);
             //                std::cout << "JUDGE, index : " << probe_index << " round : " << join->restore_round << std::endl

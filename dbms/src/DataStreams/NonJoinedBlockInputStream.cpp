@@ -132,13 +132,22 @@ Block NonJoinedBlockInputStream::readImpl()
     /// just return empty block for extra non joined block input stream read
     if (unlikely(index >= parent.getBuildConcurrency()))
         return Block();
-    if (std::all_of(
-            std::begin(parent.partitions),
-            std::end(parent.partitions),
-            [](const Join::JoinPartition & partition) { return partition.build_partition.blocks.empty(); }))
+    if (!parent.isEnableSpill())
     {
-        return Block();
+        if (parent.blocks.empty())
+            return Block();
     }
+    else
+    {
+        if (std::all_of(
+                std::begin(parent.partitions),
+                std::end(parent.partitions),
+                [](const Join::JoinPartition & partition) { return partition.build_partition.blocks.empty(); }))
+        {
+            return Block();
+        }
+    }
+
 
     if (add_not_mapped_rows)
     {

@@ -196,6 +196,8 @@ public:
       */
     BlockInputStreamPtr createStreamWithNonJoinedRows(const Block & left_sample_block, size_t index, size_t step, size_t max_block_size) const;
 
+    bool isEnableSpill() const;
+
     void insertBlockToBuildPartition(Block & block, size_t partition_index);
 
     void insertBlockToProbePartition(Block & block, size_t partition_index);
@@ -446,6 +448,7 @@ private:
     /** Blocks of "right" table.
       */
     BlocksList blocks;
+    Blocks original_blocks;
     /// mutex to protect concurrent insert to blocks
     std::mutex blocks_lock;
     /// mutex to protect concurrent modify partitions

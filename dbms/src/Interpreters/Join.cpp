@@ -938,38 +938,59 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
 
     if (unlikely(!initialized))
         throw Exception("Logical error: Join was not initialized", ErrorCodes::LOGICAL_ERROR);
-    auto dispatch_blocks = dispatchBlock(key_names_right, block);
-    assert(dispatch_blocks.size() == build_concurrency);
+    Block * stored_block = nullptr;
 
-    for (size_t i = 0; i < build_concurrency; ++i)
+    if (!isEnableSpill())
     {
-        Block * stored_block = nullptr;
         {
-            std::unique_lock partition_lock(partitions_lock);
-            Block & dispatch_block = dispatch_blocks[i];
-            if (!dispatch_block.rows())
-            {
-                continue;
-            }
-            insertBlockToBuildPartition(dispatch_block, i);
-            trySpillBuildPartition(i, false);
-            if (max_join_bytes && join_memory_info.getTotalBytes() > max_join_bytes)
-            {
-                trySpillBuildPartitions(true);
-                if (join_memory_info.getTotalBytes() > max_join_bytes)
-                {
-                    markMostMemoryUsedPartitionSpill();
-                }
-            }
-            if (partitions[i].spill)
-            {
-                continue;
-            }
-
-            stored_block = &(partitions[i].build_partition.blocks.back());
+            std::lock_guard lk(blocks_lock);
+            join_memory_info.addRows(block.rows());
+            join_memory_info.addBytes(block.bytes());
+            blocks.push_back(block);
+            stored_block = &blocks.back();
+            original_blocks.push_back(block);
         }
-        insertFromBlockInternal(stored_block, max_join_bytes ? i : stream_index);
+        insertFromBlockInternal(stored_block, stream_index);
     }
+    else
+    {
+        auto dispatch_blocks = dispatchBlock(key_names_right, block);
+        assert(dispatch_blocks.size() == build_concurrency);
+
+        for (size_t i = 0; i < build_concurrency; ++i)
+        {
+            {
+                std::unique_lock partition_lock(partitions_lock);
+                Block & dispatch_block = dispatch_blocks[i];
+                if (!dispatch_block.rows())
+                {
+                    continue;
+                }
+                insertBlockToBuildPartition(dispatch_block, i);
+                trySpillBuildPartition(i, false);
+                if (max_join_bytes && join_memory_info.getTotalBytes() > max_join_bytes)
+                {
+                    trySpillBuildPartitions(true);
+                    if (join_memory_info.getTotalBytes() > max_join_bytes)
+                    {
+                        markMostMemoryUsedPartitionSpill();
+                    }
+                }
+                if (partitions[i].spill)
+                {
+                    continue;
+                }
+
+                stored_block = &(partitions[i].build_partition.blocks.back());
+            }
+            insertFromBlockInternal(stored_block, i);
+        }
+    }
+}
+
+bool Join::isEnableSpill() const
+{
+    return max_join_bytes > 0;
 }
 
 void Join::insertFromBlockInternal(Block * stored_block, size_t stream_index)
@@ -1758,7 +1779,7 @@ void Join::joinBlockImpl(Block & block, const Maps & maps, ProbeProcessInfo & pr
     if (strictness == ASTTableJoin::Strictness::All)
         offsets_to_replicate = std::make_unique<IColumn::Offsets>(rows);
 
-    bool enable_spill_join = max_join_bytes;
+    bool enable_spill_join = isEnableSpill();
     switch (type)
     {
 #define M(TYPE)                                                                                                                                \
@@ -2149,7 +2170,7 @@ void Join::finishOneProbe()
     --active_probe_concurrency;
     if (active_probe_concurrency == 0)
     {
-        if (!needReturnNonJoinedData())
+        if (!needReturnNonJoinedData() && isEnableSpill())
         {
             std::unique_lock lk(partitions_lock);
             trySpillProbePartitions(true);
@@ -2197,8 +2218,6 @@ void Join::waitUntilAllNonJoinFinished() const
 
 Block Join::joinBlock(ProbeProcessInfo & probe_process_info) const
 {
-    //    waitUntilAllBuildFinished();
-
     std::shared_lock lock(rwlock);
 
     probe_process_info.updateStartRow();
