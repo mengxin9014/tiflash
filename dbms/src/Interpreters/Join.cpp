@@ -954,6 +954,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
     }
     else
     {
+        LOG_INFO(log, "enable spill, max_join_bytes {}, current bytes {}", max_join_bytes, join_memory_info.getTotalBytes());
         auto dispatch_blocks = dispatchBlock(key_names_right, block);
         assert(dispatch_blocks.size() == build_concurrency);
 
