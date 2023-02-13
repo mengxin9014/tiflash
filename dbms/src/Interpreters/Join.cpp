@@ -969,7 +969,6 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
     Block * stored_block = nullptr;
 
     LOG_INFO(log, "insert one block, enable spill {}, max_join_bytes {}, current bytes {}", isEnableSpill(), max_join_bytes, getTotalByteCount());
-    max_join_bytes = 100;
     if (!isEnableSpill())
     {
         {
