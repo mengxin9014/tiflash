@@ -995,7 +995,6 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         throw Exception("Logical error: Join was not initialized", ErrorCodes::LOGICAL_ERROR);
     Block * stored_block = nullptr;
 
-    max_join_bytes = 1;
     LOG_INFO(log, "insert one block, enable spill {}, max_join_bytes {}, current bytes {}", isEnableSpill(), max_join_bytes, getTotalByteCount());
     if (!isEnableSpill())
     {
@@ -1026,7 +1025,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
                 insertBlockToBuildPartition(dispatch_block, i);
                 trySpillBuildPartition(i, false);
 
-                if (max_join_bytes && getTotalByteCount() > max_join_bytes && restore_round < 2)
+                if (max_join_bytes && getTotalByteCount() > max_join_bytes)
                 {
                     trySpillBuildPartitions(true);
                     if (getTotalByteCount() > max_join_bytes)
@@ -2645,7 +2644,6 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
 
 void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list)
 {
-    max_join_bytes = 1;
     Blocks partition_blocks = dispatchBlock(key_names_left, block);
     for (size_t i = 0; i < partition_blocks.size(); ++i)
     {
@@ -2655,7 +2653,7 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
             {
                 insertBlockToProbePartition(partition_blocks[i], i);
                 trySpillProbePartition(i, false);
-                if (max_join_bytes && getTotalByteCount() > max_join_bytes && restore_round < 2)
+                if (max_join_bytes && getTotalByteCount() > max_join_bytes)
                 {
                     trySpillProbePartitions(true);
                 }
