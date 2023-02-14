@@ -141,7 +141,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                 }
                 else
                 {
-                    auto partition_block = join->getOneProbeBlockWithLock();
+                    auto partition_block = getOneProbeBlock();
                     partition_index = std::get<0>(partition_block);
                     block = std::get<1>(partition_block);
                 }
@@ -153,7 +153,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                         block = children.back()->read();
                         if (block)
                         {
-                            join->dispatchProbeBlock(block);
+                            join->dispatchProbeBlock(block, probe_partition_blocks);
                             break;
                         }
                     }
@@ -246,7 +246,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             join = restore_join;
             probe_finished = false;
             build_stream = std::make_shared<HashJoinBuildBlockInputStream>(build_stream, restore_join, stream_index, log->identifier());
-
+            children.clear();
             children.push_back(probe_stream);
             if (join->needReturnNonJoinedData())
                 non_joined_stream = join->createStreamWithNonJoinedRows(probe_stream->getHeader(), probe_index, join->getProbeConcurrency(), max_block_size);
@@ -328,6 +328,17 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             return {};
         }
     }
+}
+
+std::tuple<size_t, Block> HashJoinProbeBlockInputStream::getOneProbeBlock()
+{
+    if (!probe_partition_blocks.empty())
+    {
+        auto partition_block = probe_partition_blocks.front();
+        probe_partition_blocks.pop_front();
+        return partition_block;
+    }
+    return {0, {}};
 }
 
 } // namespace DB

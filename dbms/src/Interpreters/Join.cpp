@@ -182,6 +182,11 @@ Join::Join(
     LOG_INFO(log, "FineGrainedShuffle flag {}, stream count {}", enable_fine_grained_shuffle, fine_grained_shuffle_count);
 }
 
+Join::~Join()
+{
+    std::cout << "Join Destructor. round :" << restore_round << std::endl;
+}
+
 void Join::meetError(const String & error_message_)
 {
     std::lock_guard lk(build_probe_mutex);
@@ -990,6 +995,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         throw Exception("Logical error: Join was not initialized", ErrorCodes::LOGICAL_ERROR);
     Block * stored_block = nullptr;
 
+    max_join_bytes = 1;
     LOG_INFO(log, "insert one block, enable spill {}, max_join_bytes {}, current bytes {}", isEnableSpill(), max_join_bytes, getTotalByteCount());
     if (!isEnableSpill())
     {
@@ -1008,7 +1014,6 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         //        LOG_INFO(log, "enable spill, max_join_bytes {}, current bytes {}", max_join_bytes, getTotalByteCount());
         auto dispatch_blocks = dispatchBlock(key_names_right, block);
         assert(dispatch_blocks.size() == build_concurrency);
-
         for (size_t i = 0; i < build_concurrency; ++i)
         {
             {
@@ -1021,7 +1026,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
                 insertBlockToBuildPartition(dispatch_block, i);
                 trySpillBuildPartition(i, false);
 
-                if (max_join_bytes && getTotalByteCount() > max_join_bytes)
+                if (max_join_bytes && getTotalByteCount() > max_join_bytes && restore_round < 2)
                 {
                     trySpillBuildPartitions(true);
                     if (getTotalByteCount() > max_join_bytes)
@@ -2499,21 +2504,21 @@ void Join::markMostMemoryUsedPartitionSpill()
     }
     {
         std::unique_lock lk(external_lock);
-        std::cout << fmt::format("all bytes used : {}", getTotalByteCount()) << std::endl;
+        //        std::cout << fmt::format("all bytes used : {}", getTotalByteCount()) << std::endl;
         LOG_DEBUG(log, fmt::format("all bytes used : {}", getTotalByteCount()));
         for (size_t index = 0; index < partitions.size(); ++index)
         {
-            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
+            //            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
             LOG_DEBUG(log, fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes));
         }
-        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
+        //        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
         LOG_DEBUG(log, fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index));
     }
 
     partitions[target_partition_index].spill = true;
     spilled_partition_indexes.push_back(target_partition_index);
     trySpillBuildPartition(target_partition_index, true);
-    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
+    //    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
     LOG_DEBUG(log, fmt::format("all bytes used after spill : {}", getTotalByteCount()));
     //    RUNTIME_CHECK_MSG(spilled_partition_indexes.size() < partitions.size(), "can not spill all partitions to disk.");
 }
@@ -2638,8 +2643,9 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     return {restore_join, restore_stream_index, build_stream, probe_stream};
 }
 
-void Join::dispatchProbeBlock(Block & block)
+void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list)
 {
+    max_join_bytes = 1;
     Blocks partition_blocks = dispatchBlock(key_names_left, block);
     for (size_t i = 0; i < partition_blocks.size(); ++i)
     {
@@ -2649,7 +2655,7 @@ void Join::dispatchProbeBlock(Block & block)
             {
                 insertBlockToProbePartition(partition_blocks[i], i);
                 trySpillProbePartition(i, false);
-                if (max_join_bytes && getTotalByteCount() > max_join_bytes)
+                if (max_join_bytes && getTotalByteCount() > max_join_bytes && restore_round < 2)
                 {
                     trySpillProbePartitions(true);
                 }
@@ -2658,7 +2664,7 @@ void Join::dispatchProbeBlock(Block & block)
         }
         if (partition_blocks[i].rows())
         {
-            insertToProbeBlocksWithLock(partition_blocks[i], i);
+            partition_blocks_list.push_back({i, partition_blocks[i]});
         }
     }
     trySpillProbePartitionsWithLock(false);

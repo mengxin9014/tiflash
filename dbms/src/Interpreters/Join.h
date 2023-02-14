@@ -158,7 +158,7 @@ public:
          FileProviderPtr file_provider = nullptr,
          JoinMemoryInfo join_memory_info = JoinMemoryInfo(),
          size_t restore_round = 0);
-
+    ~Join();
     std::shared_ptr<Join> createRestoreJoin();
 
     size_t restore_round;
@@ -220,7 +220,7 @@ public:
 
     std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> getOneRestoreStream();
 
-    void dispatchProbeBlock(Block & block);
+    void dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list);
 
     Blocks dispatchBlock(const Strings & key_columns_names, const Block & from_block);
 

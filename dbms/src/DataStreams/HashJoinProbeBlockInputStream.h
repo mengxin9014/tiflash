@@ -50,6 +50,7 @@ public:
 protected:
     Block readImpl() override;
     Block getOutputBlock();
+    std::tuple<size_t, Block> getOneProbeBlock();
 
 private:
     enum class ProbeStatus
@@ -75,8 +76,8 @@ private:
     ProbeStatus status{ProbeStatus::PROBE};
     size_t joined_rows = 0;
     size_t non_joined_rows = 0;
-    std::shared_ptr<HashJoinProbeBlockInputStream> restore_probe_stream;
     std::list<JoinPtr> parents;
+    std::list<std::tuple<size_t, Block>> probe_partition_blocks;
     std::atomic<bool> probe_finished = false;
 };
 
