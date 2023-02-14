@@ -1620,14 +1620,13 @@ public:
         size_t ret = 0;
         for (size_t i = 0; i < segments.size(); i++)
             /// note the return value might not be accurate since it does not use lock, but should be enough for current usage
-            ret += segments[i]->getBufferSizeInBytes();
+            ret += segments[i] ? segments[i]->getBufferSizeInBytes() : 0;
         return ret;
     }
 
     size_t getSegmentBufferSizeInBytes(size_t segment_index) const
     {
-        return segments[segment_index]->getBufferSizeInBytes();
-        ;
+        return segments[segment_index] ? segments[segment_index]->getBufferSizeInBytes() : 0;
     }
 
     size_t rowCount() const
@@ -1635,7 +1634,7 @@ public:
         size_t ret = 0;
         for (size_t i = 0; i < segments.size(); i++)
             /// note the return value might not be accurate since it does not use lock, but should be enough for current usage
-            ret += segments[i]->size();
+            ret += segments[i] ? segments[i]->size() : 0;
         return ret;
     }
 

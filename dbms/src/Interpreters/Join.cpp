@@ -513,17 +513,11 @@ size_t Join::getTotalByteCount() const
     else
     {
         res += join_memory_info.getTotalBytes();
+        res += getTotalByteCountImpl(maps_any, type);
+        res += getTotalByteCountImpl(maps_all, type);
+        res += getTotalByteCountImpl(maps_any_full, type);
+        res += getTotalByteCountImpl(maps_all_full, type);
 
-
-        for (size_t i = 0; i < partitions.size(); ++i)
-        {
-            if (partitions[i].spill)
-                continue;
-            res += getPartitionByteCountImpl(maps_any, type, i);
-            res += getPartitionByteCountImpl(maps_all, type, i);
-            res += getPartitionByteCountImpl(maps_any_full, type, i);
-            res += getPartitionByteCountImpl(maps_all_full, type, i);
-        }
         for (size_t i = 0; i < pools.size(); ++i)
         {
             if (partitions[i].spill)
