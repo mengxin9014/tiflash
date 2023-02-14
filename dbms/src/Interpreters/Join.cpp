@@ -380,10 +380,10 @@ static void clearMapPartition(const Maps & maps, Join::Type type, size_t partiti
     case Join::Type::CROSS:
         return;
 
-#define M(NAME)                                              \
-    case Join::Type::NAME:                                   \
-        if (maps.NAME)                                       \
-            maps.NAME->releaseSegmentTable(partition_index); \
+#define M(NAME)                                            \
+    case Join::Type::NAME:                                 \
+        if (maps.NAME)                                     \
+            maps.NAME->resetSegmentTable(partition_index); \
         return;
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M

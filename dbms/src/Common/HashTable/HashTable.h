@@ -1497,9 +1497,9 @@ public:
         return segments[segment_index]->getHashTable();
     }
 
-    void releaseSegmentTable(size_t segment_index)
+    void resetSegmentTable(size_t segment_index)
     {
-        segments[segment_index].release();
+        segments[segment_index].reset();
     }
 
     std::mutex & getSegmentMutex(size_t segment_index)
