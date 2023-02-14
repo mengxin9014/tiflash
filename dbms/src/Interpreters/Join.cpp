@@ -345,6 +345,27 @@ static size_t getTotalByteCountImpl(const Maps & maps, Join::Type type)
 }
 
 template <typename Maps>
+static size_t getPartitionByteCountImpl(const Maps & maps, Join::Type type, size_t partition_index)
+{
+    switch (type)
+    {
+    case Join::Type::EMPTY:
+        return 0;
+    case Join::Type::CROSS:
+        return 0;
+
+#define M(NAME)            \
+    case Join::Type::NAME: \
+        return maps.NAME ? maps.NAME->getSegmentBufferSizeInBytes(partition_index) : 0;
+        APPLY_FOR_JOIN_VARIANTS(M)
+#undef M
+
+    default:
+        throw Exception("Unknown JOIN keys variant.", ErrorCodes::UNKNOWN_SET_DATA_VARIANT);
+    }
+}
+
+template <typename Maps>
 static void clearMapPartition(const Maps & maps, Join::Type type, size_t partition_index)
 {
     switch (type)
@@ -354,10 +375,10 @@ static void clearMapPartition(const Maps & maps, Join::Type type, size_t partiti
     case Join::Type::CROSS:
         return;
 
-#define M(NAME)                                                           \
-    case Join::Type::NAME:                                                \
-        if (maps.NAME)                                                    \
-            maps.NAME->getSegmentTable(partition_index).clearAndShrink(); \
+#define M(NAME)                                              \
+    case Join::Type::NAME:                                   \
+        if (maps.NAME)                                       \
+            maps.NAME->releaseSegmentTable(partition_index); \
         return;
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
@@ -492,10 +513,17 @@ size_t Join::getTotalByteCount() const
     else
     {
         res += join_memory_info.getTotalBytes();
-        res += getTotalByteCountImpl(maps_any, type);
-        res += getTotalByteCountImpl(maps_all, type);
-        res += getTotalByteCountImpl(maps_any_full, type);
-        res += getTotalByteCountImpl(maps_all_full, type);
+
+
+        for (size_t i = 0; i < partitions.size(); ++i)
+        {
+            if (partitions[i].spill)
+                continue;
+            res += getPartitionByteCountImpl(maps_any, type, i);
+            res += getPartitionByteCountImpl(maps_all, type, i);
+            res += getPartitionByteCountImpl(maps_any_full, type, i);
+            res += getPartitionByteCountImpl(maps_all_full, type, i);
+        }
         for (size_t i = 0; i < pools.size(); ++i)
         {
             if (partitions[i].spill)
@@ -2491,6 +2519,8 @@ void Join::markMostMemoryUsedPartitionSpill()
     partitions[target_partition_index].spill = true;
     spilled_partition_indexes.push_back(target_partition_index);
     trySpillBuildPartition(target_partition_index, true);
+    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
+    LOG_DEBUG(log, fmt::format("all bytes used after spill : {}", getTotalByteCount()));
     //    RUNTIME_CHECK_MSG(spilled_partition_indexes.size() < partitions.size(), "can not spill all partitions to disk.");
 }
 

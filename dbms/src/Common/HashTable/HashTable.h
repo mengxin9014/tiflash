@@ -709,7 +709,10 @@ public:
     using LookupResult = Cell *;
     using ConstLookupResult = const Cell *;
 
-    size_t hash(const Key & x) const { return Hash::operator()(x); }
+    size_t hash(const Key & x) const
+    {
+        return Hash::operator()(x);
+    }
 
 
     HashTable()
@@ -842,7 +845,10 @@ public:
         return const_iterator(this, ptr);
     }
 
-    const_iterator cbegin() const { return begin(); }
+    const_iterator cbegin() const
+    {
+        return begin();
+    }
 
     iterator begin()
     {
@@ -878,10 +884,22 @@ public:
 
 
 protected:
-    const_iterator iteratorTo(const Cell * ptr) const { return const_iterator(this, ptr); }
-    iterator iteratorTo(Cell * ptr) { return iterator(this, ptr); }
-    const_iterator iteratorToZero() const { return iteratorTo(this->zeroValue()); }
-    iterator iteratorToZero() { return iteratorTo(this->zeroValue()); }
+    const_iterator iteratorTo(const Cell * ptr) const
+    {
+        return const_iterator(this, ptr);
+    }
+    iterator iteratorTo(Cell * ptr)
+    {
+        return iterator(this, ptr);
+    }
+    const_iterator iteratorToZero() const
+    {
+        return iteratorTo(this->zeroValue());
+    }
+    iterator iteratorToZero()
+    {
+        return iteratorTo(this->zeroValue());
+    }
 
 
     /// If the key is zero, insert it into a special place and return true.
@@ -1479,6 +1497,11 @@ public:
         return segments[segment_index]->getHashTable();
     }
 
+    void releaseSegmentTable(size_t segment_index)
+    {
+        segments[segment_index].release();
+    }
+
     std::mutex & getSegmentMutex(size_t segment_index)
     {
         return segments[segment_index]->getMutex();
@@ -1599,6 +1622,12 @@ public:
             /// note the return value might not be accurate since it does not use lock, but should be enough for current usage
             ret += segments[i]->getBufferSizeInBytes();
         return ret;
+    }
+
+    size_t getSegmentBufferSizeInBytes(size_t segment_index) const
+    {
+        return segments[segment_index]->getBufferSizeInBytes();
+        ;
     }
 
     size_t rowCount() const
