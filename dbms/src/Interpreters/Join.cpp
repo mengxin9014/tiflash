@@ -1013,8 +1013,9 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         //        LOG_INFO(log, "enable spill, max_join_bytes {}, current bytes {}", max_join_bytes, getTotalByteCount());
         auto dispatch_blocks = dispatchBlock(key_names_right, block);
         assert(dispatch_blocks.size() == build_concurrency);
-        for (size_t i = 0; i < build_concurrency; ++i)
+        for (size_t j = stream_index; j < build_concurrency + stream_index; ++j)
         {
+            size_t i = j % build_concurrency;
             {
                 std::unique_lock partition_lock(partitions_lock);
                 Block & dispatch_block = dispatch_blocks[i];
@@ -2545,12 +2546,6 @@ void Join::insertBlockToProbePartition(Block & block, size_t partition_index)
     partitions[partition_index].probe_partition.blocks.push_back(block);
 }
 
-void Join::insertToProbeBlocksWithLock(Block & block, size_t partiton_index)
-{
-    std::unique_lock probe_blocks_lk(probe_blocks_lock);
-    probe_partition_blocks.push_back({partiton_index, block});
-}
-
 void Join::tryMarkBuildSpillFinish()
 {
     if (!spilled_partition_indexes.empty())
@@ -2579,17 +2574,6 @@ bool Join::getPartitionSpilled(size_t partition_index)
     return partitions[partition_index].spill;
 }
 
-std::tuple<size_t, Block> Join::getOneProbeBlockWithLock()
-{
-    std::unique_lock lk(probe_blocks_lock);
-    if (!probe_partition_blocks.empty())
-    {
-        auto partition_block = probe_partition_blocks.front();
-        probe_partition_blocks.pop_front();
-        return partition_block;
-    }
-    return {0, {}};
-}
 
 bool Join::hasPartitionSpilledWithLock()
 {

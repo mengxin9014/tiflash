@@ -202,8 +202,6 @@ public:
 
     void insertBlockToProbePartition(Block & block, size_t partition_index);
 
-    void insertToProbeBlocksWithLock(Block & block, size_t partiton_index);
-
     void tryMarkBuildSpillFinish();
 
     void tryMarkProbeSpillFinish();
@@ -211,8 +209,6 @@ public:
     void trySpillProbePartitionsWithLock(bool force);
 
     bool getPartitionSpilled(size_t partition_index);
-
-    std::tuple<size_t, Block> getOneProbeBlockWithLock();
 
     bool hasPartitionSpilledWithLock();
 
@@ -459,8 +455,6 @@ private:
     JoinPartitions partitions;
 
     std::list<size_t> spilled_partition_indexes;
-
-    std::list<std::tuple<size_t, Block>> probe_partition_blocks;
 
     size_t restore_stream_index;
 
