@@ -1507,6 +1507,11 @@ public:
         return segments[segment_index]->getMutex();
     }
 
+    bool isSegmentRelease(size_t segment_index)
+    {
+        return static_cast<bool>(segments[segment_index]);
+    }
+
     size_t getSegmentSize() const { return segment_size; }
 
     size_t hash(const Key & x) const

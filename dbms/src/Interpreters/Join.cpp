@@ -380,10 +380,13 @@ static void clearMapPartition(const Maps & maps, Join::Type type, size_t partiti
     case Join::Type::CROSS:
         return;
 
-#define M(NAME)                                            \
-    case Join::Type::NAME:                                 \
-        if (maps.NAME)                                     \
-            maps.NAME->resetSegmentTable(partition_index); \
+#define M(NAME)                                                              \
+    case Join::Type::NAME:                                                   \
+        if (maps.NAME)                                                       \
+        {                                                                    \
+            std::lock_guard lk(maps.NAME->getSegmentMutex(partition_index)); \
+            maps.NAME->resetSegmentTable(partition_index);                   \
+        }                                                                    \
         return;
         APPLY_FOR_JOIN_VARIANTS(M)
 #undef M
@@ -852,6 +855,10 @@ void insertFromBlockImplType(
         else if (enable_join_spill)
         {
             std::lock_guard lk(map.getSegmentMutex(stream_index));
+            if (map.isSegmentRelease(stream_index))
+            {
+                return;
+            }
             insertFromBlockImplTypeCase<STRICTNESS, KeyGetter, Map, true>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
         }
         else
