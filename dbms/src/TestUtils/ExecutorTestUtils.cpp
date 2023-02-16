@@ -168,10 +168,8 @@ void ExecutorTest::executeExecutor(
     std::vector<size_t> block_sizes)
 {
     WRAP_FOR_TEST_BEGIN
-    std::vector<size_t> concurrencies{1, 2, 10};
     for (auto concurrency : concurrencies)
     {
-        std::vector<size_t> block_sizes{1, 2, DEFAULT_BLOCK_SIZE};
         for (auto block_size : block_sizes)
         {
             context.context.setSetting("max_block_size", Field(static_cast<UInt64>(block_size)));
