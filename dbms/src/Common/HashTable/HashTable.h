@@ -1509,7 +1509,7 @@ public:
 
     bool isSegmentRelease(size_t segment_index)
     {
-        return static_cast<bool>(segments[segment_index]);
+        return !static_cast<bool>(segments[segment_index]);
     }
 
     size_t getSegmentSize() const { return segment_size; }

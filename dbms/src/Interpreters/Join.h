@@ -563,8 +563,11 @@ private:
     void trySpillProbePartition(size_t partition_index, bool force);
     void trySpillProbePartitions(bool force);
 
-    void tryReleaseBuildPartition(size_t partition_index);
-    void tryReleaseProbePartition(size_t partition_index);
+    void markReleaseBuildPartitionBlocks(size_t partition_index);
+    void onlyClearBuildPartitionBlocks(size_t partition_index);
+    void tryReleaseBuildPartitionBlocks(size_t partition_index);
+    void tryReleaseBuildPartitionHashTable(size_t partition_index);
+    void tryReleaseProbePartitionBlocks(size_t partition_index);
     void tryReleaseAllPartitions();
 
     void markMostMemoryUsedPartitionSpill();

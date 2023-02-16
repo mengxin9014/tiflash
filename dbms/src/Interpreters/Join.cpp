@@ -877,6 +877,10 @@ void insertFromBlockImplType(
         else if (enable_join_spill)
         {
             std::lock_guard lk(map.getSegmentMutex(stream_index));
+            if (map.isSegmentRelease(stream_index))
+            {
+                return;
+            }
             insertFromBlockImplTypeCase<STRICTNESS, KeyGetter, Map, false>(map, rows, key_columns, key_sizes, collators, stored_block, null_map, rows_not_inserted_to_map, stream_index, pool);
         }
         else
@@ -2525,6 +2529,7 @@ void Join::markMostMemoryUsedPartitionSpill()
     partitions[target_partition_index].spill = true;
     spilled_partition_indexes.push_back(target_partition_index);
     trySpillBuildPartition(target_partition_index, true);
+    tryReleaseBuildPartitionHashTable(target_partition_index);
     //    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
     LOG_DEBUG(log, fmt::format("all bytes used after spill : {}", getTotalByteCount()));
     //    RUNTIME_CHECK_MSG(spilled_partition_indexes.size() < partitions.size(), "can not spill all partitions to disk.");
@@ -2662,12 +2667,18 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
 {
     if (partitions[partition_index].spill
-        && ((force && partitions[partition_index].build_partition.bytes)
-            || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
+        && (force || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
     {
         LOG_DEBUG(log, "spill one file, partition index {}, restore round {}", partition_index, restore_round);
         build_spiller->spillBlocks(partitions[partition_index].build_partition.original_blocks, partition_index);
-        tryReleaseBuildPartition(partition_index);
+        if (!partitions[partition_index].build_partition.bytes)
+        {
+            onlyClearBuildPartitionBlocks(partition_index);
+        }
+        else
+        {
+            tryReleaseBuildPartitionBlocks(partition_index);
+        }
     }
 }
 
@@ -2684,7 +2695,7 @@ void Join::trySpillProbePartition(size_t partition_index, bool force)
     if (partitions[partition_index].spill && (force || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
     {
         probe_spiller->spillBlocks(partitions[partition_index].probe_partition.blocks, partition_index);
-        tryReleaseProbePartition(partition_index);
+        tryReleaseProbePartitionBlocks(partition_index);
     }
 }
 
@@ -2696,8 +2707,22 @@ void Join::trySpillProbePartitions(bool force)
     }
 }
 
+void Join::markReleaseBuildPartitionBlocks(size_t partition_index)
+{
+    join_memory_info.subBytes(partitions[partition_index].build_partition.bytes);
+    join_memory_info.subRows(partitions[partition_index].build_partition.rows);
+    partitions[partition_index].build_partition.bytes = 0;
+    partitions[partition_index].build_partition.rows = 0;
+}
 
-void Join::tryReleaseBuildPartition(size_t partition_index)
+void Join::onlyClearBuildPartitionBlocks(size_t partition_index)
+{
+    partitions[partition_index].build_partition.blocks.clear();
+    partitions[partition_index].build_partition.original_blocks.clear();
+}
+
+
+void Join::tryReleaseBuildPartitionBlocks(size_t partition_index)
 {
     join_memory_info.subBytes(partitions[partition_index].build_partition.bytes);
     join_memory_info.subRows(partitions[partition_index].build_partition.rows);
@@ -2705,6 +2730,10 @@ void Join::tryReleaseBuildPartition(size_t partition_index)
     partitions[partition_index].build_partition.rows = 0;
     partitions[partition_index].build_partition.blocks.clear();
     partitions[partition_index].build_partition.original_blocks.clear();
+}
+
+void Join::tryReleaseBuildPartitionHashTable(size_t partition_index)
+{
     clearMapPartition(maps_any, type, partition_index);
     clearMapPartition(maps_all, type, partition_index);
     clearMapPartition(maps_any_full, type, partition_index);
@@ -2718,7 +2747,7 @@ void Join::tryReleaseBuildPartition(size_t partition_index)
     }
 }
 
-void Join::tryReleaseProbePartition(size_t partition_index)
+void Join::tryReleaseProbePartitionBlocks(size_t partition_index)
 {
     partitions[partition_index].probe_partition.blocks.clear();
     join_memory_info.subBytes(partitions[partition_index].probe_partition.bytes);
@@ -2731,8 +2760,8 @@ void Join::tryReleaseAllPartitions()
 {
     for (size_t i = 0; i < partitions.size(); ++i)
     {
-        tryReleaseBuildPartition(i);
-        tryReleaseProbePartition(i);
+        tryReleaseBuildPartitionBlocks(i);
+        tryReleaseProbePartitionBlocks(i);
     }
 }
 
