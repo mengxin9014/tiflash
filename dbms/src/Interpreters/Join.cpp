@@ -2643,15 +2643,16 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
     Blocks partition_blocks = dispatchBlock(key_names_left, block);
     for (size_t i = 0; i < partition_blocks.size(); ++i)
     {
+        trySpillProbePartition(i, false);
         {
             std::unique_lock partitions_lk(partitions_lock);
             if (getPartitionSpilled(i))
             {
                 insertBlockToProbePartition(partition_blocks[i], i);
-                trySpillProbePartition(i, false);
                 if (max_join_bytes && getTotalByteCount() > max_join_bytes)
                 {
                     trySpillProbePartitions(true);
+                    RUNTIME_CHECK_MSG(getTotalByteCount() <= max_join_bytes, fmt::format("current memory used exceeds max join bytes, current memory : {}, max join bytes : {}", getTotalByteCount(), max_join_bytes));
                 }
                 continue;
             }
