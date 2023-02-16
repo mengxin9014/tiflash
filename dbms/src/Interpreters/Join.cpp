@@ -2695,6 +2695,7 @@ void Join::trySpillProbePartition(size_t partition_index, bool force)
 {
     if (partitions[partition_index].spill && ((force && partitions[partition_index].probe_partition.bytes) || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
     {
+        LOG_DEBUG(log, "spill probe partition {} size : {}, max_spilled_size_per_spill : {}", partition_index, partitions[partition_index].probe_partition.bytes, max_spilled_size_per_spill);
         probe_spiller->spillBlocks(partitions[partition_index].probe_partition.blocks, partition_index);
         tryReleaseProbePartitionBlocks(partition_index);
     }
