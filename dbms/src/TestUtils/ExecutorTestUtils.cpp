@@ -159,7 +159,7 @@ String testInfoMsg(const std::shared_ptr<tipb::DAGRequest> & request, bool enabl
         block_size,
         ExecutorSerializer().serialize(request.get()));
 }
-}
+} // namespace
 
 void ExecutorTest::executeExecutor(
     const std::shared_ptr<tipb::DAGRequest> & request,
@@ -216,14 +216,16 @@ void ExecutorTest::checkBlockSorted(
 
 void ExecutorTest::executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request, const ColumnsWithTypeAndName & expect_columns, std::vector<size_t> concurrencies, std::vector<size_t> block_sizes)
 {
-    executeExecutor(request, [&](const ColumnsWithTypeAndName & res) {
-        return columnsEqual(expect_columns, res, /*_restrict=*/false) << "\n  expect_block: \n"
-                                                                      << getColumnsContent(expect_columns)
-                                                                      << "\n actual_block: \n"
-                                                                      << getColumnsContent(res);
-    }),
-    concurrencies,
-    block_sizes);
+    executeExecutor(
+        request,
+        [&](const ColumnsWithTypeAndName & res) {
+            return columnsEqual(expect_columns, res, /*_restrict=*/false) << "\n  expect_block: \n"
+                                                                          << getColumnsContent(expect_columns)
+                                                                          << "\n actual_block: \n"
+                                                                          << getColumnsContent(res);
+        },
+        concurrencies,
+        block_sizes);
 }
 
 void ExecutorTest::executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows)

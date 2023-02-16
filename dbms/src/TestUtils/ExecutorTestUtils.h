@@ -92,10 +92,6 @@ public:
 
     // check whether the column in each output block sorted.
     void executeAndAssertSortedBlocks(const std::shared_ptr<tipb::DAGRequest> & request, const SortInfos & sort_infos);
-    void executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request,
-                                      const ColumnsWithTypeAndName & expect_columns,
-                                      std::vector<size_t> concurrencies = {1, 2, 10},
-                                      std::vector<size_t> block_sizes = {1, 2, DEFAULT_BLOCK_SIZE});
     void executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows);
 
     enum SourceType
