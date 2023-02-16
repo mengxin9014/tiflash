@@ -2641,11 +2641,11 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
 void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list)
 {
     Blocks partition_blocks = dispatchBlock(key_names_left, block);
-    trySpillProbePartition(probe_concurrency, false);
     for (size_t i = 0; i < partition_blocks.size(); ++i)
     {
         {
             std::unique_lock partitions_lk(partitions_lock);
+            trySpillProbePartition(i, false);
             if (getPartitionSpilled(i))
             {
                 insertBlockToProbePartition(partition_blocks[i], i);
