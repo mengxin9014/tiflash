@@ -226,6 +226,16 @@ void ExecutorTest::executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGR
         block_sizes);
 }
 
+void ExecutorTest::executeAndAssertSortedBlocks(const std::shared_ptr<tipb::DAGRequest> & request, const SortInfos & sort_infos)
+{
+    checkBlockSorted(request, sort_infos, [&](const ColumnsWithTypeAndName & expect_columns, const ColumnsWithTypeAndName & res) {
+        return columnsEqual(expect_columns, res, /*_restrict=*/false) << "\n  expect_block: \n"
+                                                                      << getColumnsContent(expect_columns)
+                                                                      << "\n actual_block: \n"
+                                                                      << getColumnsContent(res);
+    });
+}
+
 void ExecutorTest::executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows)
 {
     executeExecutor(request, [&](const ColumnsWithTypeAndName & res) {
