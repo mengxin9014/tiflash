@@ -81,6 +81,21 @@ public:
                                       const ColumnsWithTypeAndName & expect_columns,
                                       std::vector<size_t> concurrencies = {1, 2, 10},
                                       std::vector<size_t> block_sizes = {1, 2, DEFAULT_BLOCK_SIZE});
+
+    // To check the output column with index = column_index sorted.
+    struct SortInfo
+    {
+        size_t column_index;
+        bool desc;
+    };
+    using SortInfos = std::vector<SortInfo>;
+
+    // check whether the column in each output block sorted.
+    void executeAndAssertSortedBlocks(const std::shared_ptr<tipb::DAGRequest> & request, const SortInfos & sort_infos);
+    void executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request,
+                                      const ColumnsWithTypeAndName & expect_columns,
+                                      std::vector<size_t> concurrencies = {1, 2, 10},
+                                      std::vector<size_t> block_sizes = {1, 2, DEFAULT_BLOCK_SIZE});
     void executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows);
 
     enum SourceType
@@ -105,7 +120,7 @@ public:
         }
     }
 
-    ColumnsWithTypeAndName executeStreams(DAGContext * dag_context, bool enalbe_memory_tracker = false);
+    ColumnsWithTypeAndName executeStreams(DAGContext * dag_context, bool enable_memory_tracker = false);
 
     ColumnsWithTypeAndName executeStreams(
         const std::shared_ptr<tipb::DAGRequest> & request,
@@ -123,6 +138,11 @@ private:
         std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &)> assert_func,
         std::vector<size_t> concurrencies = {1, 2, 10},
         std::vector<size_t> block_sizes = {1, 2, DEFAULT_BLOCK_SIZE});
+
+    void checkBlockSorted(
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        const SortInfos & sort_infos,
+        std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &, const ColumnsWithTypeAndName &)> assert_func);
 
 protected:
     MockDAGRequestContext context;
