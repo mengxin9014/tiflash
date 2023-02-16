@@ -1006,7 +1006,7 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         throw Exception("Logical error: Join was not initialized", ErrorCodes::LOGICAL_ERROR);
     Block * stored_block = nullptr;
 
-    LOG_INFO(log, "insert one block, enable spill {}, max_join_bytes {}, current bytes {}", isEnableSpill(), max_join_bytes, getTotalByteCount());
+//    LOG_INFO(log, "insert one block, enable spill {}, max_join_bytes {}, current bytes {}", isEnableSpill(), max_join_bytes, getTotalByteCount());
     if (!isEnableSpill())
     {
         {
@@ -2762,6 +2762,10 @@ void Join::tryReleaseAllPartitions()
     {
         tryReleaseBuildPartitionBlocks(i);
         tryReleaseProbePartitionBlocks(i);
+        if (!partitions[i].spill)
+        {
+            tryReleaseBuildPartitionHashTable(i);
+        }
     }
 }
 
