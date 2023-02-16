@@ -2668,7 +2668,7 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
 {
     if (partitions[partition_index].spill
-        && (force || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
+        && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
     {
         LOG_DEBUG(log, "spill one file, partition index {}, restore round {}", partition_index, restore_round);
         build_spiller->spillBlocks(partitions[partition_index].build_partition.original_blocks, partition_index);
@@ -2693,7 +2693,7 @@ void Join::trySpillBuildPartitions(bool force)
 
 void Join::trySpillProbePartition(size_t partition_index, bool force)
 {
-    if (partitions[partition_index].spill && (force || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
+    if (partitions[partition_index].spill && ((force && partitions[partition_index].probe_partition.bytes) || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
     {
         probe_spiller->spillBlocks(partitions[partition_index].probe_partition.blocks, partition_index);
         tryReleaseProbePartitionBlocks(partition_index);
