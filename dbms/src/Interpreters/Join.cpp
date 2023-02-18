@@ -2526,10 +2526,10 @@ void Join::spillMostMemoryUsedPartitionIfNeed()
     //        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
     LOG_DEBUG(log, fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index));
 
-    tryReleaseBuildPartitionHashTable(target_partition_index);
     {
         std::unique_lock partition_lock(partitions_locks[target_partition_index]);
         partitions[target_partition_index].spill = true;
+        tryReleaseBuildPartitionHashTable(target_partition_index);
         spilled_partition_indexes.push_back(target_partition_index);
         trySpillBuildPartition(target_partition_index, true);
     }
