@@ -257,6 +257,16 @@ size_t NonJoinedBlockInputStream::fillColumns(const Map & map,
     if (!position)
     {
         current_segment = index;
+
+        while (parent.partitions[current_segment].spill)
+        {
+            current_segment += step;
+            if (current_segment >= map.getSegmentSize())
+            {
+                return rows_added;
+            }
+        }
+
         position = decltype(position)(
             static_cast<void *>(new typename Map::SegmentType::HashTable::const_iterator(map.getSegmentTable(current_segment).begin())),
             [](void * ptr) { delete reinterpret_cast<typename Map::SegmentType::HashTable::const_iterator *>(ptr); });
@@ -275,9 +285,13 @@ size_t NonJoinedBlockInputStream::fillColumns(const Map & map,
         if (*it == end || (parent.max_join_bytes && parent.partitions[current_segment].spill))
         {
             current_segment += step;
-            if (current_segment >= map.getSegmentSize())
+            while (parent.partitions[current_segment].spill)
             {
-                break;
+                current_segment += step;
+                if (current_segment >= map.getSegmentSize())
+                {
+                    return rows_added;
+                }
             }
             position = decltype(position)(
                 static_cast<void *>(new typename Map::SegmentType::HashTable::const_iterator(

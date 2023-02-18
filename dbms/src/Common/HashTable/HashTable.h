@@ -1507,7 +1507,7 @@ public:
         return segments[segment_index]->getMutex();
     }
 
-    bool isSegmentRelease(size_t segment_index)
+    bool isSegmentRelease(size_t segment_index) const
     {
         return !static_cast<bool>(segments[segment_index]);
     }

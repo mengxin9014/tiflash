@@ -550,6 +550,9 @@ void Join::setBuildConcurrencyAndInitPool(size_t build_concurrency_)
 
     partitions.reserve(build_concurrency);
 
+    std::vector<std::mutex> locks(build_concurrency);
+    partitions_locks.swap(locks);
+
     for (size_t i = 0; i < getBuildConcurrencyInternal(); ++i)
     {
         pools.emplace_back(std::make_shared<Arena>());
@@ -1024,11 +1027,14 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
         //        LOG_INFO(log, "enable spill, max_join_bytes {}, current bytes {}", max_join_bytes, getTotalByteCount());
         auto dispatch_blocks = dispatchBlock(key_names_right, block);
         assert(dispatch_blocks.size() == build_concurrency);
+
+        spillMostMemoryUsedPartitionIfNeed();
+
         for (size_t j = stream_index; j < build_concurrency + stream_index; ++j)
         {
             size_t i = j % build_concurrency;
             {
-                std::unique_lock partition_lock(partitions_lock);
+                std::unique_lock partition_lock(partitions_locks[i]);
                 Block & dispatch_block = dispatch_blocks[i];
                 if (!dispatch_block.rows())
                 {
@@ -1036,15 +1042,6 @@ void Join::insertFromBlock(const Block & block, size_t stream_index)
                 }
                 insertBlockToBuildPartition(dispatch_block, i);
                 trySpillBuildPartition(i, false);
-
-                if (max_join_bytes && getTotalByteCount() > max_join_bytes)
-                {
-                    trySpillBuildPartitions(true);
-                    if (getTotalByteCount() > max_join_bytes)
-                    {
-                        markMostMemoryUsedPartitionSpill();
-                    }
-                }
                 if (partitions[i].spill)
                 {
                     continue;
@@ -2487,11 +2484,17 @@ IColumn::Selector Join::selectDispatchBlock(const Strings & key_columns_names, c
     return hashToSelector(hash);
 }
 
-void Join::markMostMemoryUsedPartitionSpill()
+void Join::spillMostMemoryUsedPartitionIfNeed()
 {
     size_t target_partition_index = 0;
     size_t max_bytes = 0;
     size_t j = 0;
+
+    std::unique_lock lk(partitions_lock);
+    if (max_join_bytes && getTotalByteCount() <= max_join_bytes)
+    {
+        return;
+    }
     for (; j < partitions.size(); ++j)
     {
         if (!partitions[j].spill)
@@ -2513,26 +2516,25 @@ void Join::markMostMemoryUsedPartitionSpill()
             target_partition_index = i;
         }
     }
+//    RUNTIME_CHECK_MSG(partitions[target_partition_index].build_partition.bytes != 0, "could not spill because max_join_bytes is too small");
+    LOG_DEBUG(log, fmt::format("all bytes used : {}", getTotalByteCount()));
+    for (size_t index = 0; index < partitions.size(); ++index)
     {
-        std::unique_lock lk(external_lock);
-        //        std::cout << fmt::format("all bytes used : {}", getTotalByteCount()) << std::endl;
-        LOG_DEBUG(log, fmt::format("all bytes used : {}", getTotalByteCount()));
-        for (size_t index = 0; index < partitions.size(); ++index)
-        {
-            //            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
-            LOG_DEBUG(log, fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes));
-        }
-        //        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
-        LOG_DEBUG(log, fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index));
+        //            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
+        LOG_DEBUG(log, fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes));
     }
+    //        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
+    LOG_DEBUG(log, fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index));
 
-    partitions[target_partition_index].spill = true;
-    spilled_partition_indexes.push_back(target_partition_index);
-    trySpillBuildPartition(target_partition_index, true);
     tryReleaseBuildPartitionHashTable(target_partition_index);
+    {
+        std::unique_lock partition_lock(partitions_locks[target_partition_index]);
+        partitions[target_partition_index].spill = true;
+        spilled_partition_indexes.push_back(target_partition_index);
+        trySpillBuildPartition(target_partition_index, true);
+    }
     //    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
     LOG_DEBUG(log, fmt::format("all bytes used after spill : {}", getTotalByteCount()));
-    //    RUNTIME_CHECK_MSG(spilled_partition_indexes.size() < partitions.size(), "can not spill all partitions to disk.");
 }
 
 void Join::insertBlockToBuildPartition(Block & block, size_t partition_index)
@@ -2621,6 +2623,7 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     }
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
+    LOG_DEBUG(log, "partition {}, round {}", spilled_partition_index, restore_round);
     restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
     restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
@@ -2652,7 +2655,7 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
                 if (max_join_bytes && getTotalByteCount() > max_join_bytes)
                 {
                     trySpillProbePartitions(true);
-                    RUNTIME_CHECK_MSG(getTotalByteCount() <= max_join_bytes, fmt::format("current memory used exceeds max join bytes, current memory : {}, max join bytes : {}", getTotalByteCount(), max_join_bytes));
+//                    RUNTIME_CHECK_MSG(getTotalByteCount() <= max_join_bytes, fmt::format("current memory used exceeds max join bytes, current memory : {}, max join bytes : {}", getTotalByteCount(), max_join_bytes));
                 }
                 continue;
             }
@@ -2667,19 +2670,17 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
 
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
 {
+    LOG_DEBUG(log, "spill build  spill {}, bytes {}", partitions[partition_index].spill, partitions[partition_index].build_partition.bytes);
     if (partitions[partition_index].spill
         && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
     {
-        LOG_DEBUG(log, "spill one file, partition index {}, restore round {}", partition_index, restore_round);
+        LOG_DEBUG(log, "spill one file, partition index {}, restore round {}, bytes {}, blocks {}",
+                  partition_index,
+                  restore_round,
+                  partitions[partition_index].build_partition.bytes,
+                  partitions[partition_index].build_partition.original_blocks.size());
         build_spiller->spillBlocks(partitions[partition_index].build_partition.original_blocks, partition_index);
-        if (!partitions[partition_index].build_partition.bytes)
-        {
-            onlyClearBuildPartitionBlocks(partition_index);
-        }
-        else
-        {
-            tryReleaseBuildPartitionBlocks(partition_index);
-        }
+        tryReleaseBuildPartitionBlocks(partition_index);
     }
 }
 

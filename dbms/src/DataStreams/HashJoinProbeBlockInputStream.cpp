@@ -64,7 +64,12 @@ Block HashJoinProbeBlockInputStream::getTotals()
 
 Block HashJoinProbeBlockInputStream::getHeader() const
 {
-    Block res = children.back()->getHeader();
+    Block res;
+
+    LOG_DEBUG(log, "children name : AAAAAAAAA {}", probe_index);
+    LOG_DEBUG(log, "children name : {}", children.back()->getName());
+    res = children.back()->getHeader();
+
     assert(res.rows() == 0);
     ProbeProcessInfo header_probe_process_info(0);
     header_probe_process_info.resetBlock(std::move(res));
@@ -247,6 +252,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             probe_finished = false;
             build_stream = std::make_shared<HashJoinBuildBlockInputStream>(build_stream, restore_join, stream_index, log->identifier());
             children.clear();
+            LOG_DEBUG(log, "change children, name : {}, index {}", probe_stream->getName(), probe_index);
             children.push_back(probe_stream);
             if (join->needReturnNonJoinedData())
                 non_joined_stream = join->createStreamWithNonJoinedRows(probe_stream->getHeader(), probe_index, join->getProbeConcurrency(), max_block_size);

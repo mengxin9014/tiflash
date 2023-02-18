@@ -742,10 +742,13 @@ try
                        .build(context);
 
     const ColumnsWithTypeAndName expect = {toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0}), toNullableVec<Int32>({2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}), toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0})};
-    context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(100000000)));
-    executeAndAssertColumnsEqual(request, expect, {5}, {DEFAULT_BLOCK_SIZE});
-    //    executeAndAssertColumnsEqual(request, expect, {3, 10, 20}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
-    //    ASSERT_THROW(executeAndAssertColumnsEqual(request, expect, {1}, {DEFAULT_BLOCK_SIZE}), Exception);
+    context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(50000)));
+    executeAndAssertColumnsEqual(request, expect, {5}, {2, 5, DEFAULT_BLOCK_SIZE});
+//        executeAndAssertColumnsEqual(request, expect, {5}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
+
+//        context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(20000)));
+//        ASSERT_THROW(executeAndAssertColumnsEqual(request, expect, {1}, {DEFAULT_BLOCK_SIZE}), Exception);
+//       executeAndAssertColumnsEqual(request, expect, {2}, {DEFAULT_BLOCK_SIZE});
 }
 CATCH
 
@@ -842,7 +845,9 @@ try
             context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(max_join_bytes)));
             if (right_table_name == "right_table_1_concurrency" && left_table_name == "left_table_1_concurrency")
             {
+                max_join_bytes = 100000;
                 ASSERT_THROW(executeStreams(request, original_max_streams), Exception);
+                max_join_bytes = 23292240;
             }
             else
             {
@@ -866,13 +871,14 @@ try
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
 
             // test spill to disk
-            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(max_join_bytes)));
             if (exchange_concurrency == 1 && left_table_name == "left_table_1_concurrency")
             {
+                context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(100000)));
                 ASSERT_THROW(executeStreams(request, original_max_streams), Exception);
             }
             else
             {
+                context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(max_join_bytes)));
                 ASSERT_COLUMNS_EQ_UR(ref_columns, executeStreams(request, original_max_streams));
             }
             context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(0)));
@@ -930,13 +936,14 @@ try
             ASSERT_COLUMNS_EQ_UR(ref_columns, result_columns);
 
             // test spill to disk
-            context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(max_join_bytes)));
             if (exchange_concurrency == 1 && left_table_name == "left_table_1_concurrency")
             {
+                context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(100000)));
                 ASSERT_THROW(executeStreams(request, original_max_streams), Exception);
             }
             else
             {
+                context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(max_join_bytes)));
                 ASSERT_COLUMNS_EQ_UR(ref_columns, executeStreams(request, original_max_streams));
             }
             context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(0)));

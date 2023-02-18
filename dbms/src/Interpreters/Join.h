@@ -457,6 +457,7 @@ private:
     std::mutex blocks_lock;
     /// mutex to protect concurrent modify partitions
     std::mutex partitions_lock;
+    std::vector<std::mutex> partitions_locks;
     /// mutex to protect concurrent modify probe blocks
     std::mutex probe_blocks_lock;
 
@@ -578,7 +579,7 @@ private:
     void tryReleaseProbePartitionBlocks(size_t partition_index);
     void tryReleaseAllPartitions();
 
-    void markMostMemoryUsedPartitionSpill();
+    void spillMostMemoryUsedPartitionIfNeed();
 };
 
 struct ProbeProcessInfo
