@@ -2670,11 +2670,11 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
 
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
 {
-    LOG_DEBUG(log, "spill build  spill {}, bytes {}", partitions[partition_index].spill, partitions[partition_index].build_partition.bytes);
+//    LOG_DEBUG(log, "spill build  spill {}, bytes {}", partitions[partition_index].spill, partitions[partition_index].build_partition.bytes);
     if (partitions[partition_index].spill
         && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
     {
-        LOG_DEBUG(log, "spill one file, partition index {}, restore round {}, bytes {}, blocks {}",
+//        LOG_DEBUG(log, "spill one file, partition index {}, restore round {}, bytes {}, blocks {}",
                   partition_index,
                   restore_round,
                   partitions[partition_index].build_partition.bytes,
