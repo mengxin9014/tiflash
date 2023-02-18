@@ -2675,10 +2675,10 @@ void Join::trySpillBuildPartition(size_t partition_index, bool force)
         && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
     {
 //        LOG_DEBUG(log, "spill one file, partition index {}, restore round {}, bytes {}, blocks {}",
-                  partition_index,
-                  restore_round,
-                  partitions[partition_index].build_partition.bytes,
-                  partitions[partition_index].build_partition.original_blocks.size());
+//                  partition_index,
+//                  restore_round,
+//                  partitions[partition_index].build_partition.bytes,
+//                  partitions[partition_index].build_partition.original_blocks.size());
         build_spiller->spillBlocks(partitions[partition_index].build_partition.original_blocks, partition_index);
         tryReleaseBuildPartitionBlocks(partition_index);
     }
