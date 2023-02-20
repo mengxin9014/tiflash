@@ -156,7 +156,6 @@ Join::Join(
     , other_condition_ptr(other_condition_ptr_)
     , original_strictness(strictness)
     , max_block_size_for_cross_join(max_block_size_)
-    , restore_stream_index(0)
     , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
     , log(Logger::get(req_id))
@@ -166,7 +165,6 @@ Join::Join(
     , enable_fine_grained_shuffle(enable_fine_grained_shuffle_)
     , fine_grained_shuffle_count(fine_grained_shuffle_count_)
 {
-    std::cout << "Join Constructor. round :" << restore_round_ << std::endl;
     if (other_condition_ptr != nullptr)
     {
         /// if there is other_condition, then should keep all the valid rows during probe stage
@@ -2605,7 +2603,7 @@ bool Join::hasPartitionSpilled()
     return !spilled_partition_indexes.empty();
 }
 
-std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestoreStream()
+std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestoreStream()
 {
     std::unique_lock lk(partitions_lock);
     assert(restore_build_streams.size() == restore_probe_streams.size());
@@ -2618,13 +2616,11 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     {
         auto build_stream = get_back_stream(restore_build_streams);
         auto probe_stream = get_back_stream(restore_probe_streams);
-        auto stream_index = ++restore_stream_index;
         if (restore_build_streams.empty())
         {
-            restore_stream_index = 0;
             spilled_partition_indexes.pop_front();
         }
-        return {restore_join, stream_index, build_stream, probe_stream};
+        return {restore_join, build_stream, probe_stream};
     }
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
@@ -2636,14 +2632,13 @@ std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> Join::getO
     auto probe_stream = get_back_stream(restore_probe_streams);
     if (restore_build_streams.empty())
     {
-        restore_stream_index = 0;
         spilled_partition_indexes.pop_front();
     }
     restore_join = createRestoreJoin();
     restore_join->initBuild(build_stream->getHeader(), probe_concurrency);
     restore_join->setInitActiveBuildConcurrency();
     restore_join->initProbe(probe_stream->getHeader(), probe_concurrency);
-    return {restore_join, restore_stream_index, build_stream, probe_stream};
+    return {restore_join, build_stream, probe_stream};
 }
 
 void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list)
@@ -2714,21 +2709,6 @@ void Join::trySpillProbePartitions(bool force)
         trySpillProbePartition(i, force);
     }
 }
-
-void Join::markReleaseBuildPartitionBlocks(size_t partition_index)
-{
-    join_memory_info.subBytes(partitions[partition_index].build_partition.bytes);
-    join_memory_info.subRows(partitions[partition_index].build_partition.rows);
-    partitions[partition_index].build_partition.bytes = 0;
-    partitions[partition_index].build_partition.rows = 0;
-}
-
-void Join::onlyClearBuildPartitionBlocks(size_t partition_index)
-{
-    partitions[partition_index].build_partition.blocks.clear();
-    partitions[partition_index].build_partition.original_blocks.clear();
-}
-
 
 void Join::tryReleaseBuildPartitionBlocks(size_t partition_index)
 {

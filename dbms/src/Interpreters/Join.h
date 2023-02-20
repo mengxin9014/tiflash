@@ -224,7 +224,7 @@ public:
 
     bool hasPartitionSpilled();
 
-    std::tuple<JoinPtr, size_t, BlockInputStreamPtr, BlockInputStreamPtr> getOneRestoreStream();
+    std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> getOneRestoreStream();
 
     void dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>> & partition_blocks_list);
 
@@ -276,8 +276,6 @@ public:
     }
 
     void meetError(const String & error_message);
-
-    std::mutex external_lock;
 
     /// Reference to the row in block.
     struct RowRef
@@ -467,8 +465,6 @@ private:
 
     std::list<size_t> spilled_partition_indexes;
 
-    size_t restore_stream_index;
-
     size_t max_spilled_size_per_spill;
     size_t max_join_bytes;
 
@@ -574,8 +570,6 @@ private:
     void trySpillProbePartition(size_t partition_index, bool force);
     void trySpillProbePartitions(bool force);
 
-    void markReleaseBuildPartitionBlocks(size_t partition_index);
-    void onlyClearBuildPartitionBlocks(size_t partition_index);
     void tryReleaseBuildPartitionBlocks(size_t partition_index);
     void tryReleaseBuildPartitionHashTable(size_t partition_index);
     void tryReleaseProbePartitionBlocks(size_t partition_index);
