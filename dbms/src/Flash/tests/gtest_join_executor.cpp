@@ -832,8 +832,6 @@ try
     {
         for (auto & right_table_name : right_table_names)
         {
-            std::cout << "left_table_name : " << left_table_name << std::endl;
-            std::cout << "right_table_name : " << right_table_name << std::endl;
             request = context
                           .scan("outer_join_test", left_table_name)
                           .join(context.scan("outer_join_test", right_table_name), tipb::JoinType::TypeRightOuterJoin, {col("a")})
@@ -897,8 +895,6 @@ try
     {
         for (auto & right_table_name : right_table_names)
         {
-            std::cout << "left_table_name : " << left_table_name << std::endl;
-            std::cout << "right_table_name : " << right_table_name << std::endl;
             request = context
                           .scan("outer_join_test", left_table_name)
                           .join(context.scan("outer_join_test", right_table_name), tipb::JoinType::TypeRightOuterJoin, {col("a")}, {}, {gt(col(right_table_name + ".b"), lit(Field(static_cast<Int64>(1000))))}, {}, {}, 0)

@@ -2514,14 +2514,11 @@ void Join::spillMostMemoryUsedPartitionIfNeed()
             target_partition_index = i;
         }
     }
-    //    RUNTIME_CHECK_MSG(partitions[target_partition_index].build_partition.bytes != 0, "could not spill because max_join_bytes is too small");
     LOG_DEBUG(log, fmt::format("all bytes used : {}", getTotalByteCount()));
     for (size_t index = 0; index < partitions.size(); ++index)
     {
-        //            std::cout << fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes) << std::endl;
         LOG_DEBUG(log, fmt::format("partition id : {}, rows : {}, bytes : {}", index, partitions[index].build_partition.rows, partitions[index].build_partition.bytes));
     }
-    //        std::cout << fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index) << std::endl;
     LOG_DEBUG(log, fmt::format("make round : {}, partition : {} spill.", restore_round, target_partition_index));
 
     {
@@ -2531,7 +2528,6 @@ void Join::spillMostMemoryUsedPartitionIfNeed()
         spilled_partition_indexes.push_back(target_partition_index);
         trySpillBuildPartition(target_partition_index, true);
     }
-    //    std::cout << fmt::format("all bytes used after spill : {}", getTotalByteCount()) << std::endl;
     LOG_DEBUG(log, fmt::format("all bytes used after spill : {}", getTotalByteCount()));
 }
 
