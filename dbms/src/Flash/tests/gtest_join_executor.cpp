@@ -742,13 +742,12 @@ try
                        .build(context);
 
     const ColumnsWithTypeAndName expect = {toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0}), toNullableVec<Int32>({2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}), toNullableVec<Int32>({1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 0, 0, 0})};
+    context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(10000)));
+    ASSERT_THROW(executeAndAssertColumnsEqual(request, expect, {1}, {DEFAULT_BLOCK_SIZE}), Exception);
     context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(50000)));
-    executeAndAssertColumnsEqual(request, expect, {5}, {2, 5, DEFAULT_BLOCK_SIZE});
-//        executeAndAssertColumnsEqual(request, expect, {5}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
-
-//        context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(20000)));
-//        ASSERT_THROW(executeAndAssertColumnsEqual(request, expect, {1}, {DEFAULT_BLOCK_SIZE}), Exception);
-//       executeAndAssertColumnsEqual(request, expect, {2}, {DEFAULT_BLOCK_SIZE});
+    executeAndAssertColumnsEqual(request, expect, {2, 5}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
+    context.context.setSetting("max_join_bytes", Field(static_cast<UInt64>(120000)));
+    executeAndAssertColumnsEqual(request, expect, {10}, {1, 2, 5, DEFAULT_BLOCK_SIZE});
 }
 CATCH
 

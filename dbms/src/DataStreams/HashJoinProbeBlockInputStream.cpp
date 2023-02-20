@@ -39,7 +39,7 @@ HashJoinProbeBlockInputStream::HashJoinProbeBlockInputStream(
 
 Block HashJoinProbeBlockInputStream::getTotals()
 {
-    if (auto * child = dynamic_cast<IProfilingBlockInputStream *>(&*children.back()))
+    if (auto * child = !join->isRestoreJoin() ? dynamic_cast<IProfilingBlockInputStream *>(&*children.back()) : dynamic_cast<IProfilingBlockInputStream *>(&*restore_stream))
     {
         totals = child->getTotals();
         if (!totals)
@@ -66,7 +66,8 @@ Block HashJoinProbeBlockInputStream::getHeader() const
 {
     //    LOG_DEBUG(log, "children name : AAAAAAAAA {}", probe_index);
     //    LOG_DEBUG(log, "children name : {}", children.back()->getName());
-    Block res = children.back()->getHeader();;
+    Block res = children.back()->getHeader();
+    ;
     assert(res.rows() == 0);
     ProbeProcessInfo header_probe_process_info(0);
     header_probe_process_info.resetBlock(std::move(res));
@@ -152,7 +153,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                 {
                     if (join->isEnableSpill())
                     {
-                        block = children.back()->read();
+                        block = !join->isRestoreJoin() ? children.back()->read() : restore_stream->read();
                         if (block)
                         {
                             join->dispatchProbeBlock(block, probe_partition_blocks);
@@ -248,9 +249,9 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             join = restore_join;
             probe_finished = false;
             build_stream = std::make_shared<HashJoinBuildBlockInputStream>(build_stream, restore_join, stream_index, log->identifier());
-            children.clear();
-//            LOG_DEBUG(log, "change children, name : {}, index {}", probe_stream->getName(), probe_index);
-            children.push_back(probe_stream);
+            restore_stream.reset();
+            //            LOG_DEBUG(log, "change children, name : {}, index {}", probe_stream->getName(), probe_index);
+            restore_stream = probe_stream;
             if (join->needReturnNonJoinedData())
                 non_joined_stream = join->createStreamWithNonJoinedRows(probe_stream->getHeader(), probe_index, join->getProbeConcurrency(), max_block_size);
             probe_process_info.all_rows_joined_finish = true;

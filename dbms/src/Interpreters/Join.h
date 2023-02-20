@@ -206,6 +206,8 @@ public:
 
     bool isEnableSpill() const;
 
+    bool isRestoreJoin() const;
+
     void insertBlockToBuildPartition(Block & block, size_t partition_index);
 
     void insertBlockToProbePartition(Block & block, size_t partition_index);

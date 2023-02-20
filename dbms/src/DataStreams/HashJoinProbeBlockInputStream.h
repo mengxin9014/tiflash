@@ -73,6 +73,7 @@ private:
     UInt64 max_block_size;
     ProbeProcessInfo probe_process_info;
     BlockInputStreamPtr non_joined_stream;
+    BlockInputStreamPtr restore_stream;
     ProbeStatus status{ProbeStatus::PROBE};
     size_t joined_rows = 0;
     size_t non_joined_rows = 0;
