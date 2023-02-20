@@ -206,6 +206,11 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         case ProbeStatus::BUILD_RESTORE_PARTITION:
         {
             auto [restore_join, build_stream, probe_stream] = join->getOneRestoreStream();
+            if (!restore_join)
+            {
+                status = ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE;
+                break;
+            }
             parents.push_back(join);
             join = restore_join;
             probe_finished = false;

@@ -158,7 +158,7 @@ public:
          FileProviderPtr file_provider = nullptr,
          JoinMemoryInfo join_memory_info = JoinMemoryInfo(),
          size_t restore_round = 0);
-    ~Join();
+
     std::shared_ptr<Join> createRestoreJoin();
 
     size_t restore_round;
@@ -215,8 +215,6 @@ public:
     void tryMarkBuildSpillFinish();
 
     void tryMarkProbeSpillFinish();
-
-    void trySpillProbePartitionsWithLock(bool force);
 
     bool getPartitionSpilled(size_t partition_index);
 
@@ -420,7 +418,6 @@ private:
     /// Names of key columns (columns for equi-JOIN) in "right" table (in the order they appear in USING clause).
     const Names key_names_right;
 
-    mutable std::mutex build_mutex;
     mutable std::mutex build_probe_mutex;
 
     mutable std::condition_variable build_cv;
@@ -570,10 +567,10 @@ private:
     void trySpillProbePartition(size_t partition_index, bool force);
     void trySpillProbePartitions(bool force);
 
-    void tryReleaseBuildPartitionBlocks(size_t partition_index);
-    void tryReleaseBuildPartitionHashTable(size_t partition_index);
-    void tryReleaseProbePartitionBlocks(size_t partition_index);
-    void tryReleaseAllPartitions();
+    void releaseBuildPartitionBlocks(size_t partition_index);
+    void releaseBuildPartitionHashTable(size_t partition_index);
+    void releaseProbePartitionBlocks(size_t partition_index);
+    void releaseAllPartitions();
 
     void spillMostMemoryUsedPartitionIfNeed();
 };
