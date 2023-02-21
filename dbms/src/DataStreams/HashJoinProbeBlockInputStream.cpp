@@ -71,11 +71,18 @@ Block HashJoinProbeBlockInputStream::getHeader() const
     return join->joinBlock(header_probe_process_info);
 }
 
-void HashJoinProbeBlockInputStream::finishOneProbe()
+void HashJoinProbeBlockInputStream::finishOneProbe(bool isCancel)
 {
     bool expect = false;
     if likely (probe_finished.compare_exchange_strong(expect, true))
-        join->finishOneProbe();
+        join->finishOneProbe(isCancel);
+}
+
+void HashJoinProbeBlockInputStream::finishOneNonJoin(bool isCancel)
+{
+    bool expect = false;
+    if likely (non_join_finished.compare_exchange_strong(expect, true))
+        join->finishOneNonJoin(isCancel);
 }
 
 void HashJoinProbeBlockInputStream::cancel(bool kill)
@@ -85,7 +92,11 @@ void HashJoinProbeBlockInputStream::cancel(bool kill)
     /// and expects these meaningless blocks won't be used to produce meaningful result.
     try
     {
-        finishOneProbe();
+        finishOneProbe(true);
+        if (join->needReturnNonJoinedData())
+        {
+            finishOneNonJoin(true);
+        }
     }
     catch (...)
     {
@@ -95,9 +106,15 @@ void HashJoinProbeBlockInputStream::cancel(bool kill)
     }
     if (non_joined_stream != nullptr)
     {
-        auto * p_stream = dynamic_cast<IProfilingBlockInputStream *>(non_joined_stream.get());
-        if (p_stream != nullptr)
-            p_stream->cancel(kill);
+        auto * p_non_joined_stream = dynamic_cast<IProfilingBlockInputStream *>(non_joined_stream.get());
+        if (p_non_joined_stream != nullptr)
+            p_non_joined_stream->cancel(kill);
+    }
+    if (restore_stream != nullptr)
+    {
+        auto * p_restore_stream = dynamic_cast<IProfilingBlockInputStream *>(restore_stream.get());
+        if (p_restore_stream != nullptr)
+            p_restore_stream->cancel(kill);
     }
 }
 
@@ -196,7 +213,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                     status = ProbeStatus::FINISHED;
                     break;
                 }
-                join->finishOneNonJoin();
+                finishOneNonJoin();
                 join->waitUntilAllNonJoinFinished();
                 status = ProbeStatus::JUDGE_WEATHER_HAVE_PARTITION_TO_RESTORE;
                 break;
@@ -214,6 +231,10 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
             parents.push_back(join);
             join = restore_join;
             probe_finished = false;
+            if (join->needReturnNonJoinedData())
+            {
+                non_join_finished = false;
+            }
             build_stream = std::make_shared<HashJoinBuildBlockInputStream>(build_stream, restore_join, probe_index, log->identifier());
             restore_stream.reset();
             restore_stream = probe_stream;

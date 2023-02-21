@@ -261,10 +261,10 @@ public:
     void finishOneBuild();
     void waitUntilAllBuildFinished() const;
 
-    void finishOneProbe();
+    void finishOneProbe(bool isCancel = false);
     void waitUntilAllProbeFinished() const;
 
-    void finishOneNonJoin();
+    void finishOneNonJoin(bool isCancel = false);
     void waitUntilAllNonJoinFinished() const;
 
     size_t getBuildConcurrency() const

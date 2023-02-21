@@ -64,7 +64,8 @@ private:
     };
 
     void readSuffixImpl() override;
-    void finishOneProbe();
+    void finishOneProbe(bool isCancel = false);
+    void finishOneNonJoin(bool isCancel = false);
 
     const LoggerPtr log;
     JoinPtr join;
@@ -79,6 +80,7 @@ private:
     std::list<JoinPtr> parents;
     std::list<std::tuple<size_t, Block>> probe_partition_blocks;
     std::atomic<bool> probe_finished = false;
+    std::atomic<bool> non_join_finished = false;
 };
 
 } // namespace DB

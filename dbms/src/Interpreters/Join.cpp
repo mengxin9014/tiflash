@@ -2223,7 +2223,7 @@ void Join::waitUntilAllBuildFinished() const
         throw Exception(error_message);
 }
 
-void Join::finishOneProbe()
+void Join::finishOneProbe(bool isCancel)
 {
     std::unique_lock lock(build_probe_mutex);
     if (active_probe_concurrency == 1)
@@ -2233,7 +2233,7 @@ void Join::finishOneProbe()
     --active_probe_concurrency;
     if (active_probe_concurrency == 0)
     {
-        if (!needReturnNonJoinedData() && isEnableSpill())
+        if (!isCancel && !needReturnNonJoinedData() && isEnableSpill())
         {
             std::unique_lock lk(partitions_lock);
             trySpillProbePartitions(true);
@@ -2255,12 +2255,13 @@ void Join::waitUntilAllProbeFinished() const
 }
 
 
-void Join::finishOneNonJoin()
+void Join::finishOneNonJoin(bool isCancel)
 {
     std::unique_lock lock(non_join_mutex);
     active_non_join_concurrency--;
     if (active_non_join_concurrency == 0)
     {
+        if (!isCancel && isEnableSpill())
         {
             std::unique_lock lk(partitions_lock);
             trySpillProbePartitions(true);
@@ -2275,8 +2276,10 @@ void Join::waitUntilAllNonJoinFinished() const
 {
     std::unique_lock lock(non_join_mutex);
     non_join_cv.wait(lock, [&]() {
-        return active_non_join_concurrency == 0;
+        return meet_error || active_non_join_concurrency == 0;
     });
+    if (meet_error)
+        throw Exception(error_message);
 }
 
 Block Join::joinBlock(ProbeProcessInfo & probe_process_info) const
