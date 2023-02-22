@@ -2613,8 +2613,8 @@ std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestor
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
     LOG_DEBUG(log, "partition {}, round {}", spilled_partition_index, restore_round);
-    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
-    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
+    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
+    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
     auto build_stream = get_back_stream(restore_build_streams);
     auto probe_stream = get_back_stream(restore_probe_streams);
