@@ -117,8 +117,8 @@ PhysicalPlanNodePtr PhysicalJoin::build(
 
     const Settings & settings = context.getSettingsRef();
     size_t max_block_size_for_cross_join = settings.max_block_size;
-    SpillConfig build_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_build"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
-    SpillConfig probe_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_probe"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
+    SpillConfig build_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_build", log->identifier()), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
+    SpillConfig probe_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_probe", log->identifier()), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
     fiu_do_on(FailPoints::minimum_block_size_for_cross_join, { max_block_size_for_cross_join = 1; });
 
     JoinPtr join_ptr = std::make_shared<Join>(

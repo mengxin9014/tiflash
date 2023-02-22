@@ -2175,8 +2175,8 @@ bool ExpressionAnalyzer::appendJoin(ExpressionActionsChain & chain, bool only_ty
 
     if (!subquery_for_set.join)
     {
-        SpillConfig build_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_build"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
-        SpillConfig probe_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_probe"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
+        SpillConfig build_spill_config(context.getTemporaryPath(), fmt::format("hash_join_0_build"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
+        SpillConfig probe_spill_config(context.getTemporaryPath(), fmt::format("hash_join_0_probe"), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
         JoinPtr join = std::make_shared<Join>(
             join_key_names_left,
             join_key_names_right,
