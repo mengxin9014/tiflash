@@ -144,6 +144,9 @@ public:
          const String & req_id,
          bool enable_fine_grained_shuffle_,
          size_t fine_grained_shuffle_count_,
+         size_t max_join_bytes_,
+         const SpillConfig & build_spill_config_,
+         const SpillConfig & probe_spill_config_,
          const TiDB::TiDBCollators & collators_ = TiDB::dummy_collators,
          const String & left_filter_column = "",
          const String & right_filter_column = "",
@@ -152,10 +155,6 @@ public:
          ExpressionActionsPtr other_condition_ptr = nullptr,
          size_t max_block_size = 0,
          const String & match_helper_name = "",
-         size_t max_spilled_size_per_spill_ = 1024ULL * 1024 * 1024,
-         size_t max_join_bytes_ = 0,
-         String tmp_path = "",
-         FileProviderPtr file_provider = nullptr,
          JoinMemoryInfo join_memory_info = JoinMemoryInfo(),
          size_t restore_round = 0);
 
@@ -462,8 +461,9 @@ private:
 
     std::list<size_t> spilled_partition_indexes;
 
-    size_t max_spilled_size_per_spill;
     size_t max_join_bytes;
+    SpillConfig build_spill_config;
+    SpillConfig probe_spill_config;
 
     BlockInputStreams restore_build_streams;
     BlockInputStreams restore_probe_streams;
@@ -500,9 +500,6 @@ private:
 
     Block totals;
     JoinMemoryInfo join_memory_info;
-
-    String tmp_path;
-    FileProviderPtr file_provider;
 
     /** Protect state for concurrent use in insertFromBlock and joinBlock.
       * Note that these methods could be called simultaneously only while use of StorageJoin,

@@ -263,8 +263,8 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
 
     const Settings & settings = context.getSettingsRef();
     size_t max_block_size_for_cross_join = settings.max_block_size;
-    size_t max_spilled_size_per_spill = settings.max_spilled_size_per_spill;
-    size_t max_join_bytes = settings.max_join_bytes;
+    SpillConfig build_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_build", log->identifier()), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
+    SpillConfig probe_spill_config(context.getTemporaryPath(), fmt::format("{}_hash_join_0_probe", log->identifier()), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
     fiu_do_on(FailPoints::minimum_block_size_for_cross_join, { max_block_size_for_cross_join = 1; });
 
     JoinPtr join_ptr = std::make_shared<Join>(
@@ -275,6 +275,9 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
         log->identifier(),
         enableFineGrainedShuffle(fine_grained_shuffle_count),
         fine_grained_shuffle_count,
+        settings.max_join_bytes,
+        build_spill_config,
+        probe_spill_config,
         tiflash_join.join_key_collators,
         probe_filter_column_name,
         build_filter_column_name,
@@ -282,11 +285,7 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
         other_eq_filter_from_in_column_name,
         other_condition_expr,
         max_block_size_for_cross_join,
-        match_helper_name,
-        max_spilled_size_per_spill,
-        max_join_bytes,
-        context.getTemporaryPath(),
-        context.getFileProvider());
+        match_helper_name);
 
     recordJoinExecuteInfo(tiflash_join.build_side_index, join_ptr);
 
@@ -400,9 +399,10 @@ void DAGQueryBlockInterpreter::executeAggregation(
     executeExpression(pipeline, expression_actions_ptr, log, "before aggregation");
 
     Block before_agg_header = pipeline.firstStream()->getHeader();
+    const Settings & settings = context.getSettingsRef();
 
     AggregationInterpreterHelper::fillArgColumnNumbers(aggregate_descriptions, before_agg_header);
-    SpillConfig spill_config(context.getTemporaryPath(), fmt::format("{}_aggregation", log->identifier()), context.getSettingsRef().max_spilled_size_per_spill, context.getFileProvider());
+    SpillConfig spill_config(context.getTemporaryPath(), fmt::format("{}_aggregation", log->identifier()), settings.max_cached_data_bytes_in_spiller, settings.max_spilled_rows_per_file, settings.max_spilled_bytes_per_file, context.getFileProvider());
     auto params = AggregationInterpreterHelper::buildParams(
         context,
         before_agg_header,
@@ -430,7 +430,6 @@ void DAGQueryBlockInterpreter::executeAggregation(
     else if (pipeline.streams.size() > 1)
     {
         /// If there are several sources, then we perform parallel aggregation
-        const Settings & settings = context.getSettingsRef();
         BlockInputStreamPtr stream = std::make_shared<ParallelAggregatingBlockInputStream>(
             pipeline.streams,
             BlockInputStreams{},

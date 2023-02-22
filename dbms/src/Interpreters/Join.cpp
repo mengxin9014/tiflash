@@ -103,6 +103,10 @@ ColumnRawPtrs getKeyColumns(const Names & key_names, const Block & block)
 
     return key_columns;
 }
+SpillConfig createSpillConfigWithNewSpillId(const SpillConfig & config, const String & new_spill_id)
+{
+    return SpillConfig(config.spill_dir, new_spill_id, config.max_cached_data_bytes_in_spiller, config.max_spilled_rows_per_file, config.max_spilled_bytes_per_file, config.file_provider);
+}
 } // namespace
 
 const std::string Join::match_helper_prefix = "__left-semi-join-match-helper";
@@ -123,6 +127,9 @@ Join::Join(
     const String & req_id,
     bool enable_fine_grained_shuffle_,
     size_t fine_grained_shuffle_count_,
+    size_t max_join_bytes_,
+    const SpillConfig & build_spill_config_,
+    const SpillConfig & probe_spill_config_,
     const TiDB::TiDBCollators & collators_,
     const String & left_filter_column_,
     const String & right_filter_column_,
@@ -131,10 +138,6 @@ Join::Join(
     ExpressionActionsPtr other_condition_ptr_,
     size_t max_block_size_,
     const String & match_helper_name,
-    size_t max_spilled_size_per_spill_,
-    size_t max_join_bytes_,
-    String tmp_path_,
-    FileProviderPtr file_provider_,
     JoinMemoryInfo join_memory_info_,
     size_t restore_round_)
     : restore_round(restore_round_)
@@ -156,12 +159,11 @@ Join::Join(
     , other_condition_ptr(other_condition_ptr_)
     , original_strictness(strictness)
     , max_block_size_for_cross_join(max_block_size_)
-    , max_spilled_size_per_spill(max_spilled_size_per_spill_)
     , max_join_bytes(max_join_bytes_)
+    , build_spill_config(build_spill_config_)
+    , probe_spill_config(probe_spill_config_)
     , log(Logger::get(req_id))
     , join_memory_info(join_memory_info_)
-    , tmp_path(tmp_path_)
-    , file_provider(file_provider_)
     , enable_fine_grained_shuffle(enable_fine_grained_shuffle_)
     , fine_grained_shuffle_count(fine_grained_shuffle_count_)
 {
@@ -607,6 +609,10 @@ std::shared_ptr<Join> Join::createRestoreJoin()
         log->identifier(),
         false,
         0,
+        // todo update max_join_bytes based on the restore concurrency
+        max_join_bytes,
+        createSpillConfigWithNewSpillId(build_spill_config, fmt::format("{}_hash_join_{}_build", log->identifier(), restore_round + 1)),
+        createSpillConfigWithNewSpillId(probe_spill_config, fmt::format("{}_hash_join_{}_probe", log->identifier(), restore_round + 1)),
         collators,
         left_filter_column,
         right_filter_column,
@@ -615,10 +621,6 @@ std::shared_ptr<Join> Join::createRestoreJoin()
         other_condition_ptr,
         max_block_size_for_cross_join,
         match_helper_name,
-        max_spilled_size_per_spill,
-        max_join_bytes,
-        tmp_path,
-        file_provider,
         join_memory_info,
         restore_round + 1);
 }
@@ -630,11 +632,8 @@ void Join::initBuild(const Block & sample_block, size_t build_concurrency_)
         throw Exception("Logical error: Join has been initialized", ErrorCodes::LOGICAL_ERROR);
     initialized = true;
     setBuildConcurrencyAndInitPool(build_concurrency_);
-    build_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_{}_build", log->identifier(), restore_round), max_spilled_size_per_spill, file_provider),
-                                              false,
-                                              build_concurrency_,
-                                              sample_block,
-                                              log);
+    /// todo fix wrong header(sample_block)
+    build_spiller = std::make_unique<Spiller>(build_spill_config, false, build_concurrency_, sample_block, log);
     /// Choose data structure to use for JOIN.
     initMapImpl(chooseMethod(getKeyColumns(key_names_right, sample_block), key_sizes));
     setSampleBlock(sample_block);
@@ -644,11 +643,8 @@ void Join::initProbe(const Block & sample_block, size_t probe_concurrency_)
 {
     std::unique_lock lock(rwlock);
     setProbeConcurrency(probe_concurrency_);
-    probe_spiller = std::make_unique<Spiller>(SpillConfig(tmp_path, fmt::format("{}_hash_join_{}_probe", log->identifier(), restore_round), max_spilled_size_per_spill, file_provider),
-                                              false,
-                                              build_concurrency,
-                                              sample_block,
-                                              log);
+    /// todo fix wrong header(sample_block)
+    probe_spiller = std::make_unique<Spiller>(probe_spill_config, false, build_concurrency, sample_block, log);
 }
 
 namespace
@@ -2617,8 +2613,8 @@ std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestor
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
     LOG_DEBUG(log, "partition {}, round {}", spilled_partition_index, restore_round);
-    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
-    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency);
+    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
+    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
     auto build_stream = get_back_stream(restore_build_streams);
     auto probe_stream = get_back_stream(restore_probe_streams);
@@ -2657,7 +2653,7 @@ void Join::dispatchProbeBlock(Block & block, std::list<std::tuple<size_t, Block>
 void Join::trySpillBuildPartition(size_t partition_index, bool force)
 {
     if (partitions[partition_index].spill
-        && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= max_spilled_size_per_spill))
+        && ((force && partitions[partition_index].build_partition.bytes) || partitions[partition_index].build_partition.bytes >= build_spill_config.max_cached_data_bytes_in_spiller))
     {
         build_spiller->spillBlocks(partitions[partition_index].build_partition.original_blocks, partition_index);
         releaseBuildPartitionBlocks(partition_index);
@@ -2674,7 +2670,7 @@ void Join::trySpillBuildPartitions(bool force)
 
 void Join::trySpillProbePartition(size_t partition_index, bool force)
 {
-    if (partitions[partition_index].spill && ((force && partitions[partition_index].probe_partition.bytes) || partitions[partition_index].probe_partition.bytes >= max_spilled_size_per_spill))
+    if (partitions[partition_index].spill && ((force && partitions[partition_index].probe_partition.bytes) || partitions[partition_index].probe_partition.bytes >= probe_spill_config.max_cached_data_bytes_in_spiller))
     {
         probe_spiller->spillBlocks(partitions[partition_index].probe_partition.blocks, partition_index);
         releaseProbePartitionBlocks(partition_index);
