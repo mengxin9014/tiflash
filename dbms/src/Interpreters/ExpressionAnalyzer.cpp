@@ -2187,7 +2187,8 @@ bool ExpressionAnalyzer::appendJoin(ExpressionActionsChain & chain, bool only_ty
             0 /*fine_grained_shuffle_count_*/,
             settings.max_join_bytes,
             build_spill_config,
-            probe_spill_config);
+            probe_spill_config,
+            settings.join_restore_concurrency);
 
         Names required_joined_columns(join_key_names_right.begin(), join_key_names_right.end());
         for (const auto & name_type : columns_added_by_join)

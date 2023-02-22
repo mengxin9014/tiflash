@@ -147,6 +147,7 @@ public:
          size_t max_join_bytes_,
          const SpillConfig & build_spill_config_,
          const SpillConfig & probe_spill_config_,
+         Int64 join_restore_concurrency_,
          const TiDB::TiDBCollators & collators_ = TiDB::dummy_collators,
          const String & left_filter_column = "",
          const String & right_filter_column = "",
@@ -464,9 +465,11 @@ private:
     size_t max_join_bytes;
     SpillConfig build_spill_config;
     SpillConfig probe_spill_config;
+    Int64 join_restore_concurrency;
 
     BlockInputStreams restore_build_streams;
     BlockInputStreams restore_probe_streams;
+    Int64 restore_join_build_concurrency = -1;
 
     JoinPtr restore_join;
 

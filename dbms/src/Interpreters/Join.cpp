@@ -107,6 +107,29 @@ SpillConfig createSpillConfigWithNewSpillId(const SpillConfig & config, const St
 {
     return SpillConfig(config.spill_dir, new_spill_id, config.max_cached_data_bytes_in_spiller, config.max_spilled_rows_per_file, config.max_spilled_bytes_per_file, config.file_provider);
 }
+size_t getRestoreJoinBuildConcurrency(size_t total_partitions, size_t spilled_partitions, Int64 join_restore_concurrency, size_t total_concurrency)
+{
+    if (join_restore_concurrency < 0)
+    {
+        /// restore serially, so one restore join will take up all the concurrency
+        return total_concurrency;
+    }
+    else if (join_restore_concurrency > 0)
+    {
+        /// try to restore `join_restore_concurrency` partition at a time, but restore_join_build_concurrency should be at least 1
+        return std::max(1, total_concurrency / join_restore_concurrency);
+    }
+    else
+    {
+        assert(total_partitions >= spilled_partitions);
+        size_t unspilled_partitions = total_partitions - spilled_partitions;
+        /// try to restore at most (unspilled_partitions - 1) partitions at a time
+        size_t max_concurrent_restore_partition = unspilled_partitions <= 1 ? 1 : unspilled_partitions - 1;
+        size_t restore_times = (spilled_partitions + max_concurrent_restore_partition - 1) / max_concurrent_restore_partition;
+        size_t restore_build_concurrency = (restore_times * total_concurrency) / spilled_partitions;
+        return std::max(total_concurrency > 1 ? 2 : 1, restore_build_concurrency);
+    }
+}
 } // namespace
 
 const std::string Join::match_helper_prefix = "__left-semi-join-match-helper";
@@ -130,6 +153,7 @@ Join::Join(
     size_t max_join_bytes_,
     const SpillConfig & build_spill_config_,
     const SpillConfig & probe_spill_config_,
+    Int64 join_restore_concurrency_,
     const TiDB::TiDBCollators & collators_,
     const String & left_filter_column_,
     const String & right_filter_column_,
@@ -162,6 +186,7 @@ Join::Join(
     , max_join_bytes(max_join_bytes_)
     , build_spill_config(build_spill_config_)
     , probe_spill_config(probe_spill_config_)
+    , join_restore_concurrency(join_restore_concurrency_)
     , log(Logger::get(req_id))
     , join_memory_info(join_memory_info_)
     , enable_fine_grained_shuffle(enable_fine_grained_shuffle_)
@@ -613,6 +638,7 @@ std::shared_ptr<Join> Join::createRestoreJoin()
         max_join_bytes,
         createSpillConfigWithNewSpillId(build_spill_config, fmt::format("{}_hash_join_{}_build", log->identifier(), restore_round + 1)),
         createSpillConfigWithNewSpillId(probe_spill_config, fmt::format("{}_hash_join_{}_probe", log->identifier(), restore_round + 1)),
+        join_restore_concurrency,
         collators,
         left_filter_column,
         right_filter_column,
@@ -2612,9 +2638,12 @@ std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestor
     }
     auto spilled_partition_index = spilled_partition_indexes.front();
     RUNTIME_CHECK_MSG(partitions[spilled_partition_index].spill, "should not restore unspilled partition.");
-    LOG_DEBUG(log, "partition {}, round {}", spilled_partition_index, restore_round);
-    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
-    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, probe_concurrency, true);
+    if (restore_join_build_concurrency <= 0)
+        restore_join_build_concurrency = getRestoreJoinBuildConcurrency(partitions.size(), spilled_partition_indexes.size(), join_restore_concurrency, probe_concurrency);
+    assert(restore_join_build_concurrency >= 1);
+    LOG_DEBUG(log, "partition {}, round {}, build concurrency {}", spilled_partition_index, restore_round, restore_join_build_concurrency);
+    restore_build_streams = build_spiller->restoreBlocks(spilled_partition_index, restore_join_build_concurrency, true);
+    restore_probe_streams = probe_spiller->restoreBlocks(spilled_partition_index, restore_join_build_concurrency, true);
     RUNTIME_CHECK_MSG(!restore_build_streams.empty(), "restore streams should not be empty");
     auto build_stream = get_back_stream(restore_build_streams);
     auto probe_stream = get_back_stream(restore_probe_streams);
@@ -2623,9 +2652,9 @@ std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestor
         spilled_partition_indexes.pop_front();
     }
     restore_join = createRestoreJoin();
-    restore_join->initBuild(build_stream->getHeader(), probe_concurrency);
+    restore_join->initBuild(build_stream->getHeader(), restore_join_build_concurrency);
     restore_join->setInitActiveBuildConcurrency();
-    restore_join->initProbe(probe_stream->getHeader(), probe_concurrency);
+    restore_join->initProbe(probe_stream->getHeader(), restore_join_build_concurrency);
     return {restore_join, build_stream, probe_stream};
 }
 

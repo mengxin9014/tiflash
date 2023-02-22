@@ -278,6 +278,7 @@ void DAGQueryBlockInterpreter::handleJoin(const tipb::Join & join, DAGPipeline &
         settings.max_join_bytes,
         build_spill_config,
         probe_spill_config,
+        settings.join_restore_concurrency,
         tiflash_join.join_key_collators,
         probe_filter_column_name,
         build_filter_column_name,
