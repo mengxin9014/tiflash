@@ -248,7 +248,6 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
                 if (non_joined_stream != nullptr)
                     current_non_joined_stream_index = dynamic_cast<NonJoinedBlockInputStream *>(non_joined_stream.get())->getNonJoinedIndex();
             }
-            probe_finished = false;
             probe_process_info.all_rows_joined_finish = true;
             while (restore_build_stream->read()) {};
             status = ProbeStatus::PROBE;
