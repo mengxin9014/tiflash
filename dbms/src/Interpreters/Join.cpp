@@ -2230,6 +2230,7 @@ void Join::finishOneBuild()
     --active_build_concurrency;
     if (active_build_concurrency == 0)
     {
+        if (isEnableSpill())
         {
             std::unique_lock p_lock(partitions_lock);
             if (hasPartitionSpilled())
@@ -2262,6 +2263,7 @@ void Join::finishOneProbe()
     --active_probe_concurrency;
     if (active_probe_concurrency == 0)
     {
+        if (isEnableSpill())
         {
             std::unique_lock p_lock(partitions_lock);
             if (hasPartitionSpilled())
