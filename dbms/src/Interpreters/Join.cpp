@@ -2231,11 +2231,12 @@ void Join::finishOneBuild()
     if (active_build_concurrency == 0)
     {
         {
-            /// don't need to add any locks here because at this time
-            /// all the related threads are waiting in `waitUntilAllBuildFinished()`
-            /// todo maybe we can spill probe partition in its own thread
-            trySpillBuildPartitions(true);
-            tryMarkBuildSpillFinish();
+            std::unique_lock p_lock(partitions_lock);
+            if (hasPartitionSpilled())
+            {
+                trySpillBuildPartitions(true);
+                tryMarkBuildSpillFinish();
+            }
         }
         build_cv.notify_all();
     }
@@ -2261,15 +2262,16 @@ void Join::finishOneProbe()
     --active_probe_concurrency;
     if (active_probe_concurrency == 0)
     {
-        if (isEnableSpill())
         {
-            /// no need to add lock since all the other related threads is either finished or wait in `waitUntilAllProbeFinished`
-            /// todo maybe we can spill probe partition in its own thread
-            trySpillProbePartitions(true);
-            tryMarkProbeSpillFinish();
-            if (!needReturnNonJoinedData())
+            std::unique_lock p_lock(partitions_lock);
+            if (hasPartitionSpilled())
             {
-                releaseAllPartitions();
+                trySpillProbePartitions(true);
+                tryMarkProbeSpillFinish();
+                if (!needReturnNonJoinedData())
+                {
+                    releaseAllPartitions();
+                }
             }
         }
         probe_cv.notify_all();
