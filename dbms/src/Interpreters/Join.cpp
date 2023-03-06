@@ -2565,7 +2565,7 @@ void Join::spillMostMemoryUsedPartitionIfNeed()
             return;
         }
 
-        RUNTIME_CHECK_MSG(restore_round < 4, "max_bytes_before_external_join is too small, join restore round exceeds limit, please make it larger and try again.");
+        RUNTIME_CHECK_MSG(restore_round < 4, "max_bytes_before_external_join is too small, join restore round exceeds limit, please make max_bytes_before_external_join larger and try again.");
         RUNTIME_CHECK_MSG(build_concurrency > 1, "Join with build concurrency = 1 does not support spill.");
 
         LOG_DEBUG(log, fmt::format("all bytes used : {}", getTotalByteCount()));
