@@ -209,7 +209,12 @@ Join::Join(
 
 void Join::meetError(const String & error_message_)
 {
-    std::lock_guard lk(build_probe_mutex);
+    std::unique_lock lock(build_probe_mutex);
+    meetErrorImpl(error_message_, lock);
+}
+
+void Join::meetErrorImpl(const String & error_message_, std::unique_lock<std::mutex> &)
+{
     if (meet_error)
         return;
     meet_error = true;
@@ -2220,7 +2225,6 @@ void Join::finishOneBuild()
     {
         if (isEnableSpill())
         {
-            std::unique_lock p_lock(partitions_mutex);
             if (hasPartitionSpilled())
             {
                 trySpillBuildPartitions(true);
@@ -2253,7 +2257,6 @@ void Join::finishOneProbe()
     {
         if (isEnableSpill())
         {
-            std::unique_lock p_lock(partitions_mutex);
             if (hasPartitionSpilled())
             {
                 trySpillProbePartitions(true);
@@ -2504,7 +2507,7 @@ void Join::spillMostMemoryUsedPartitionIfNeed()
     Blocks blocks_to_spill;
 
     {
-        std::unique_lock lk(partitions_mutex);
+        std::unique_lock lk(build_probe_mutex);
         if (max_bytes_before_external_join && getTotalByteCount() <= max_bytes_before_external_join)
         {
             return;
@@ -2590,7 +2593,7 @@ bool Join::getPartitionSpilled(size_t partition_index)
 
 bool Join::hasPartitionSpilledWithLock()
 {
-    std::unique_lock lk(partitions_mutex);
+    std::unique_lock lk(build_probe_mutex);
     return hasPartitionSpilled();
 }
 
@@ -2601,16 +2604,13 @@ bool Join::hasPartitionSpilled()
 
 std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr, BlockInputStreamPtr> Join::getOneRestoreStream(size_t max_block_size)
 {
-    std::unique_lock lk(partitions_mutex);
-    {
-        std::lock_guard err_lk(build_probe_mutex);
-        if (meet_error)
-            return {nullptr, nullptr, nullptr, nullptr};
-    }
-    LOG_DEBUG(log, fmt::format("restore_build_streams {}, restore_probe_streams {}, restore_non_joined_data_streams {}", restore_build_streams.size(), restore_build_streams.size(), restore_non_joined_data_streams.size()));
-    assert(restore_build_streams.size() == restore_probe_streams.size() && restore_build_streams.size() == restore_non_joined_data_streams.size());
+    std::unique_lock lock(build_probe_mutex);
+    if (meet_error)
+        throw Exception(error_message);
     try
     {
+        LOG_DEBUG(log, fmt::format("restore_build_streams {}, restore_probe_streams {}, restore_non_joined_data_streams {}", restore_build_streams.size(), restore_build_streams.size(), restore_non_joined_data_streams.size()));
+        assert(restore_build_streams.size() == restore_probe_streams.size() && restore_build_streams.size() == restore_non_joined_data_streams.size());
         auto get_back_stream = [](BlockInputStreams & streams) {
             BlockInputStreamPtr stream = streams.back();
             streams.pop_back();
@@ -2665,8 +2665,11 @@ std::tuple<JoinPtr, BlockInputStreamPtr, BlockInputStreamPtr, BlockInputStreamPt
     }
     catch (...)
     {
+        restore_build_streams.clear();
+        restore_probe_streams.clear();
+        restore_non_joined_data_streams.clear();
         auto err_message = getCurrentExceptionMessage(false, true);
-        meetError(err_message);
+        meetErrorImpl(err_message, lock);
         throw Exception(err_message);
     }
 }

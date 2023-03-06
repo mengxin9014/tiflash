@@ -280,6 +280,7 @@ public:
     }
 
     void meetError(const String & error_message);
+    void meetErrorImpl(const String & error_message, std::unique_lock<std::mutex> & lock);
 
     /// Reference to the row in block.
     struct RowRef
@@ -458,9 +459,8 @@ private:
     /// mutex to protect concurrent insert to blocks
     std::mutex blocks_lock;
     /// mutex to protect concurrent modify partitions
-    /// note if you wants to acquire both partitions_mutex and partitions_mutexes,
-    /// please lock partitions_mutex first
-    std::mutex partitions_mutex;
+    /// note if you wants to acquire both build_probe_mutex and partitions_mutexes,
+    /// please lock build_probe_mutex first
     std::vector<std::mutex> partitions_mutexes;
 
     JoinPartitions partitions;
