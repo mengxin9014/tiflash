@@ -129,6 +129,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
         case ProbeStatus::PROBE:
         {
             join->waitUntilAllBuildFinished();
+            assert(current_probe_stream != nullptr);
             if (probe_process_info.all_rows_joined_finish)
             {
                 size_t partition_index = 0;
@@ -136,7 +137,7 @@ Block HashJoinProbeBlockInputStream::getOutputBlock()
 
                 if (!join->isEnableSpill())
                 {
-                    block = children.back()->read();
+                    block = current_probe_stream->read();
                 }
                 else
                 {
