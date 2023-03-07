@@ -1202,6 +1202,11 @@ bool Join::isEnableSpill() const
     return max_bytes_before_external_join > 0;
 }
 
+bool Join::isRestoreJoin() const
+{
+    return restore_round > 0;
+}
+
 void Join::insertFromBlockInternal(Block * stored_block, size_t stream_index)
 {
     size_t keys_size = key_names_right.size();
