@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,7 +37,6 @@ public:
     void flush() override { row_output->flush(); }
 
     void setRowsBeforeLimit(size_t rows_before_limit) override;
-    void setTotals(const Block & totals) override;
     void setExtremes(const Block & extremes) override;
     void onProgress(const Progress & progress) override;
 
@@ -49,4 +48,4 @@ private:
     bool first_row = true;
 };
 
-}
+} // namespace DB

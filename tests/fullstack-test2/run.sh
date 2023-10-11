@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,4 +31,18 @@ wait_env
 docker-compose -f cluster.yaml -f tiflash-dt.yaml exec -T tiflash0 bash -c 'cd /tests ; ./run-test.sh fullstack-test2 true && ./run-test.sh fullstack-test-dt'
 
 docker-compose -f cluster.yaml -f tiflash-dt.yaml down
+clean_data_log
+
+docker-compose -f cluster.yaml -f tiflash-dt-disable-local-tunnel.yaml up -d
+wait_env
+docker-compose -f cluster.yaml -f tiflash-dt-disable-local-tunnel.yaml exec -T tiflash0 bash -c 'cd /tests ; ./run-test.sh fullstack-test/mpp'
+
+docker-compose -f cluster.yaml -f tiflash-dt-disable-local-tunnel.yaml down
+clean_data_log
+
+docker-compose -f cluster.yaml -f tiflash-dt-disable-planner.yaml up -d
+wait_env
+docker-compose -f cluster.yaml -f tiflash-dt-disable-planner.yaml exec -T tiflash0 bash -c 'cd /tests ; ./run-test.sh fullstack-test/mpp'
+
+docker-compose -f cluster.yaml -f tiflash-dt-disable-planner.yaml down
 clean_data_log

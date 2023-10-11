@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/ExpressionAnalyzer.h>
 #include <Interpreters/IInterpreter.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/KVStore/Types.h>
 
 #include <memory>
 
@@ -75,11 +75,7 @@ public:
 
     Block getSampleBlock();
 
-    static Block getSampleBlock(
-        const ASTPtr & query_ptr_,
-        const Context & context_);
-
-    void ignoreWithTotals();
+    static Block getSampleBlock(const ASTPtr & query_ptr_, const Context & context_);
 
 private:
     struct Pipeline
@@ -91,12 +87,6 @@ private:
           */
         BlockInputStreams streams;
 
-        /** When executing FULL or RIGHT JOIN, there will be a data stream from which you can read "not joined" rows.
-          * It has a special meaning, since reading from it should be done after reading from the main streams.
-          * It is appended to the main streams in UnionBlockInputStream or ParallelAggregatingBlockInputStream.
-          */
-        BlockInputStreams streams_with_non_joined_data;
-
         BlockInputStreamPtr & firstStream() { return streams.at(0); }
 
         template <typename Transform>
@@ -104,28 +94,19 @@ private:
         {
             for (auto & stream : streams)
                 transform(stream);
-
-            for (auto & stream : streams_with_non_joined_data)
-                transform(stream);
         }
 
-        bool hasMoreThanOneStream() const
-        {
-            return streams.size() + streams_with_non_joined_data.size() > 1;
-        }
+        bool hasMoreThanOneStream() const { return streams.size(); }
     };
 
     struct OnlyAnalyzeTag
     {
     };
-    InterpreterSelectQuery(
-        OnlyAnalyzeTag,
-        const ASTPtr & query_ptr_,
-        const Context & context_);
+    InterpreterSelectQuery(OnlyAnalyzeTag, const ASTPtr & query_ptr_, const Context & context_);
 
     void init(const Names & required_result_column_names);
 
-    void getAndLockStorageWithSchemaVersion(const String & database_name, const String & table_name, Int64 schema_version);
+    void getAndLockStorageWithSchemaVersion(const String & database_name, const String & table_name);
 
     void executeImpl(Pipeline & pipeline, const BlockInputStreamPtr & input, bool dry_run);
 
@@ -174,9 +155,8 @@ private:
     QueryProcessingStage::Enum executeFetchColumns(Pipeline & pipeline, bool dry_run);
 
     void executeWhere(Pipeline & pipeline, const ExpressionActionsPtr & expression);
-    void executeAggregation(Pipeline & pipeline, const ExpressionActionsPtr & expression, const FileProviderPtr & file_provider, bool overflow_row, bool final);
-    void executeMergeAggregated(Pipeline & pipeline, bool overflow_row, bool final);
-    void executeTotalsAndHaving(Pipeline & pipeline, bool has_having, const ExpressionActionsPtr & expression, bool overflow_row);
+    void executeAggregation(Pipeline & pipeline, const ExpressionActionsPtr & expression, bool final);
+    void executeMergeAggregated(Pipeline & pipeline, bool final);
     void executeHaving(Pipeline & pipeline, const ExpressionActionsPtr & expression);
     void executeExpression(Pipeline & pipeline, const ExpressionActionsPtr & expression);
     void executeOrder(Pipeline & pipeline);
@@ -188,7 +168,9 @@ private:
     void executeProjection(Pipeline & pipeline, const ExpressionActionsPtr & expression);
     void executeDistinct(Pipeline & pipeline, bool before_order, Names columns);
     void executeExtremes(Pipeline & pipeline);
-    void executeSubqueriesInSetsAndJoins(Pipeline & pipeline, std::unordered_map<String, SubqueryForSet> & subqueries_for_sets);
+    void executeSubqueriesInSetsAndJoins(
+        Pipeline & pipeline,
+        std::unordered_map<String, SubqueryForSet> & subqueries_for_sets);
 
     /** If there is a SETTINGS section in the SELECT query, then apply settings from it.
       *

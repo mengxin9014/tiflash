@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 #include <IO/Progress.h>
 #include <Interpreters/ClientInfo.h>
 #include <Interpreters/QueryPriorities.h>
+#include <Server/ServerInfo.h>
 
 #include <condition_variable>
 #include <list>
@@ -84,6 +85,10 @@ private:
 
     QueryPriorities::Handle priority_handle;
 
+    /// if for_dag_task is true, it means the request comes from TiDB, processList is only used to
+    /// maintain the memory tracker, all the query streams related field is useless
+    bool for_dag_task;
+
     std::atomic<bool> is_killed{false};
 
     /// Be careful using it. For example, queries field could be modified concurrently.
@@ -112,11 +117,13 @@ public:
         const ClientInfo & client_info_,
         size_t max_memory_usage,
         double memory_tracker_fault_probability,
-        QueryPriorities::Handle && priority_handle_)
+        QueryPriorities::Handle && priority_handle_,
+        bool for_dag_task_)
         : query(query_)
         , client_info(client_info_)
         , memory_tracker(MemoryTracker::create(max_memory_usage))
         , priority_handle(std::move(priority_handle_))
+        , for_dag_task(for_dag_task_)
     {
         memory_tracker->setDescription("(for query)");
         current_memory_tracker = memory_tracker.get();
@@ -124,31 +131,16 @@ public:
             memory_tracker->setFaultProbability(memory_tracker_fault_probability);
     }
 
-    ~ProcessListElement()
-    {
-        current_memory_tracker = nullptr;
-    }
+    ~ProcessListElement() { current_memory_tracker = nullptr; }
 
-    const ClientInfo & getClientInfo() const
-    {
-        return client_info;
-    }
+    const ClientInfo & getClientInfo() const { return client_info; }
 
-    ProgressValues getProgressIn() const
-    {
-        return progress_in.getValues();
-    }
+    ProgressValues getProgressIn() const { return progress_in.getValues(); }
 
-    ProgressValues getProgressOut() const
-    {
-        return progress_out.getValues();
-    }
+    ProgressValues getProgressOut() const { return progress_out.getValues(); }
 
     ThrottlerPtr getUserNetworkThrottler();
-    MemoryTrackerPtr getMemoryTrackerPtr()
-    {
-        return memory_tracker;
-    }
+    MemoryTrackerPtr getMemoryTrackerPtr() { return memory_tracker; }
 
     bool updateProgressIn(const Progress & value)
     {
@@ -299,7 +291,7 @@ public:
     ProcessList(size_t max_size_ = 0)
         : cur_size(0)
         , max_size(max_size_)
-        , total_memory_tracker(MemoryTracker::create())
+        , total_memory_tracker(root_of_query_mem_trackers)
     {}
 
     using EntryPtr = std::shared_ptr<ProcessListEntry>;
@@ -309,7 +301,13 @@ public:
       * If timeout is passed - throw an exception.
       * Don't count KILL QUERY queries.
       */
-    EntryPtr insert(const String & query_, const IAST * ast, const ClientInfo & client_info, const Settings & settings);
+    EntryPtr insert(
+        const String & query_,
+        const IAST * ast,
+        const ClientInfo & client_info,
+        const Settings & settings,
+        const UInt64 total_memory,
+        bool is_dag_task);
 
     /// Number of currently executing queries.
     size_t size() const { return cur_size; }

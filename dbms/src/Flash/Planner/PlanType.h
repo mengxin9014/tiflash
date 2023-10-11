@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,6 +36,12 @@ struct PlanType
         TableScan = 11,
         MockTableScan = 12,
         Join = 13,
+        AggregationBuild = 14,
+        AggregationConvergent = 15,
+        Expand = 16,
+        JoinBuild = 17,
+        JoinProbe = 18,
+        GetResult = 19,
     };
     PlanTypeEnum enum_value;
 

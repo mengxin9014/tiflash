@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,8 +19,9 @@
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/File/DMFileBlockInputStream.h>
 #include <Storages/DeltaMerge/File/DMFileBlockOutputStream.h>
+#include <Storages/DeltaMerge/StoragePool.h>
 #include <Storages/PathPool.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <gtest/gtest.h>
 
 #include <ctime>
@@ -34,7 +35,13 @@ using namespace DB;
 ColumnDefinesPtr getDefaultColumns();
 Context getContext(const DB::Settings & settings, const String & tmp_path);
 ColumnDefinesPtr createColumnDefines(size_t column_number);
-Block createBlock(size_t column_number, size_t start, size_t row_number, std::size_t limit, std::mt19937_64 & eng, size_t & acc);
+Block createBlock(
+    size_t column_number,
+    size_t start,
+    size_t row_number,
+    std::size_t limit,
+    std::mt19937_64 & eng,
+    size_t & acc);
 } // namespace DTTool::Bench
 
 namespace DTTool::Inspect
@@ -45,6 +52,7 @@ int inspectServiceMain(DB::Context & context, const InspectArgs & args);
 struct DTToolTest : public DB::base::TiFlashStorageTestBasic
 {
     DB::DM::DMFilePtr dmfile = nullptr;
+    DB::DM::DMFilePtr dmfileV3 = nullptr;
     static constexpr size_t column = 64;
     static constexpr size_t size = 128;
     static constexpr size_t field = 512;
@@ -71,23 +79,46 @@ struct DTToolTest : public DB::base::TiFlashStorageTestBasic
             property.effective_num_rows = block_size;
             properties.push_back(property);
         }
-        auto path_pool = std::make_unique<DB::StoragePathPool>(db_context->getPathPool().withTable("test", "t1", false));
-        auto storage_pool = std::make_unique<DB::DM::StoragePool>(*db_context, /*ns_id*/ 1, *path_pool, "test.t1");
+        auto path_pool
+            = std::make_shared<DB::StoragePathPool>(db_context->getPathPool().withTable("test", "t1", false));
+        auto storage_pool
+            = std::make_shared<DB::DM::StoragePool>(*db_context, NullspaceID, /*ns_id*/ 1, *path_pool, "test.t1");
         auto dm_settings = DB::DM::DeltaMergeStore::Settings{};
         auto dm_context = std::make_unique<DB::DM::DMContext>( //
             *db_context,
-            *path_pool,
-            *storage_pool,
+            path_pool,
+            storage_pool,
             /*min_version_*/ 0,
-            dm_settings.not_compress_columns,
+            NullspaceID,
+            /*physical_table_id*/ 1,
             false,
             1,
             db_context->getSettingsRef());
         // Write
         {
-            dmfile = DB::DM::DMFile::create(1, getTemporaryPath(), false, std::nullopt);
+            dmfile = DB::DM::DMFile::create(1, getTemporaryPath(), std::nullopt, 0, 0, DMFileFormat::V0);
             {
                 auto stream = DB::DM::DMFileBlockOutputStream(*db_context, dmfile, *defines);
+                stream.writePrefix();
+                for (size_t j = 0; j < blocks.size(); ++j)
+                {
+                    stream.write(blocks[j], properties[j]);
+                }
+                stream.writeSuffix();
+            }
+        }
+
+        // Write DMFile::V3
+        {
+            dmfileV3 = DB::DM::DMFile::create(
+                2,
+                getTemporaryPath(),
+                std::make_optional<DMChecksumConfig>(),
+                128 * 1024,
+                16 * 1024 * 1024,
+                DMFileFormat::V3);
+            {
+                auto stream = DB::DM::DMFileBlockOutputStream(*db_context, dmfileV3, *defines);
                 stream.writePrefix();
                 for (size_t j = 0; j < blocks.size(); ++j)
                 {
@@ -107,6 +138,12 @@ TEST_F(DTToolTest, MigrationAllFileRecognizableOnDefault)
     for (auto & i : sub_files)
     {
         EXPECT_TRUE(DTTool::Migrate::isRecognizable(*dmfile, i)) << " file: " << i;
+    }
+
+    Poco::File(dmfileV3->path()).list(sub_files);
+    for (auto & i : sub_files)
+    {
+        EXPECT_TRUE(DTTool::Migrate::isRecognizable(*dmfileV3, i)) << " file: " << i;
     }
 }
 
@@ -128,14 +165,34 @@ TEST_F(DTToolTest, MigrationSuccess)
         EXPECT_EQ(DTTool::Migrate::migrateServiceMain(*db_context, args), 0);
     }
     {
-        auto args = DTTool::Inspect::InspectArgs{
-            .check = true,
-            .file_id = 1,
-            .workdir = getTemporaryPath()};
+        auto args = DTTool::Inspect::InspectArgs{.check = true, .file_id = 1, .workdir = getTemporaryPath()};
         EXPECT_EQ(DTTool::Inspect::inspectServiceMain(*db_context, args), 0);
     }
 }
 
+
+TEST_F(DTToolTest, MigrationV3toV2Success)
+{
+    {
+        auto args = DTTool::Migrate::MigrateArgs{
+            .no_keep = false,
+            .dry_mode = false,
+            .file_id = 2,
+            .version = 2,
+            .frame = DBMS_DEFAULT_BUFFER_SIZE,
+            .algorithm = DB::ChecksumAlgo::XXH3,
+            .workdir = getTemporaryPath(),
+            .compression_method = DB::CompressionMethod::LZ4,
+            .compression_level = DB::CompressionSettings::getDefaultLevel(DB::CompressionMethod::LZ4),
+        };
+
+        EXPECT_EQ(DTTool::Migrate::migrateServiceMain(*db_context, args), 0);
+    }
+    {
+        auto args = DTTool::Inspect::InspectArgs{.check = true, .file_id = 2, .workdir = getTemporaryPath()};
+        EXPECT_EQ(DTTool::Inspect::inspectServiceMain(*db_context, args), 0);
+    }
+}
 
 void getHash(std::unordered_map<std::string, std::string> & records, const std::string & path)
 {

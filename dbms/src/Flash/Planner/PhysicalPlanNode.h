@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <Core/Block.h>
 #include <Core/Names.h>
 #include <Core/NamesAndTypes.h>
+#include <Flash/Coprocessor/FineGrainedShuffle.h>
 #include <Flash/Planner/PlanType.h>
 
 #include <memory>
@@ -28,23 +29,33 @@ struct DAGPipeline;
 class Context;
 class DAGContext;
 
+class PipelineExecutorContext;
+
+class PipelineExecGroupBuilder;
+
+class Pipeline;
+using PipelinePtr = std::shared_ptr<Pipeline>;
+class PipelineBuilder;
+
+class Event;
+using EventPtr = std::shared_ptr<Event>;
+
 class PhysicalPlanNode;
 using PhysicalPlanNodePtr = std::shared_ptr<PhysicalPlanNode>;
 
-class PhysicalPlanNode
+class PhysicalPlanNode : public std::enable_shared_from_this<PhysicalPlanNode>
 {
 public:
     PhysicalPlanNode(
         const String & executor_id_,
         const PlanType & type_,
         const NamesAndTypes & schema_,
+        const FineGrainedShuffle & fine_grained_shuffle_,
         const String & req_id);
 
     virtual ~PhysicalPlanNode() = default;
 
     virtual PhysicalPlanNodePtr children(size_t /*i*/) const = 0;
-
-    virtual void setChild(size_t /*i*/, const PhysicalPlanNodePtr & /*new_child*/) = 0;
 
     const PlanType & tp() const { return type; }
 
@@ -54,7 +65,20 @@ public:
 
     virtual size_t childrenSize() const = 0;
 
-    virtual void transform(DAGPipeline & pipeline, Context & context, size_t max_streams);
+    void buildBlockInputStream(DAGPipeline & pipeline, Context & context, size_t max_streams);
+
+    void buildPipelineExecGroup(
+        PipelineExecutorContext & exec_context,
+        PipelineExecGroupBuilder & group_builder,
+        Context & context,
+        size_t concurrency);
+
+    virtual void buildPipeline(
+        PipelineBuilder & /*builder*/,
+        Context & /*context*/,
+        PipelineExecutorContext & /*exec_status*/);
+
+    EventPtr sinkComplete(PipelineExecutorContext & exec_context);
 
     virtual void finalize(const Names & parent_require) = 0;
     void finalize();
@@ -68,16 +92,37 @@ public:
 
     void disableRestoreConcurrency() { is_restore_concurrency = false; }
 
+    const FineGrainedShuffle & getFineGrainedShuffle() const { return fine_grained_shuffle; }
+
     String toString();
 
+    String toSimpleString();
+
 protected:
-    virtual void transformImpl(DAGPipeline & /*pipeline*/, Context & /*context*/, size_t /*max_streams*/){};
+    /// Used for non-fine grained shuffle sink plan node to trigger two-stage execution logic.
+    virtual EventPtr doSinkComplete(PipelineExecutorContext & /*exec_status*/);
+
+    virtual void buildBlockInputStreamImpl(DAGPipeline & /*pipeline*/, Context & /*context*/, size_t /*max_streams*/){};
+
+    virtual void buildPipelineExecGroupImpl(
+        PipelineExecutorContext & /*exec_status*/,
+        PipelineExecGroupBuilder & /*group_builder*/,
+        Context & /*context*/,
+        size_t /*concurrency*/)
+    {
+        throw Exception("Unsupported");
+    }
 
     void recordProfileStreams(DAGPipeline & pipeline, const Context & context);
 
     String executor_id;
     PlanType type;
     NamesAndTypes schema;
+
+    // Most operators are not aware of whether they are fine-grained shuffles or not.
+    // Whether they are fine-grained shuffles or not, their execution remains unchanged.
+    // Only a few operators need to sense fine-grained shuffle, such as exchange sender/receiver, join, aggregate, window and window sort.
+    FineGrainedShuffle fine_grained_shuffle;
 
     bool is_tidb_operator = true;
     bool is_restore_concurrency = true;

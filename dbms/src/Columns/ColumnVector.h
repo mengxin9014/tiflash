@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,10 +39,7 @@ struct CompareHelper
       * - if nan_direction_hint == 1 - NaN are considered to be larger than all numbers;
       * Essentially: nan_direction_hint == -1 says that the comparison is for sorting in descending order.
       */
-    static int compare(T a, T b, int /*nan_direction_hint*/)
-    {
-        return a > b ? 1 : (a < b ? -1 : 0);
-    }
+    static int compare(T a, T b, int /*nan_direction_hint*/) { return a > b ? 1 : (a < b ? -1 : 0); }
 };
 
 template <>
@@ -95,9 +92,7 @@ struct FloatCompareHelper
             if (isnan_a && isnan_b)
                 return 0;
 
-            return isnan_a
-                ? nan_direction_hint
-                : -nan_direction_hint;
+            return isnan_a ? nan_direction_hint : -nan_direction_hint;
         }
 
         return (T(0) < (a - b)) - ((a - b) < T(0));
@@ -128,7 +123,7 @@ inline UInt64 unionCastToUInt64(Float64 x)
     union
     {
         Float64 src;
-        UInt64 res;
+        UInt64 res{};
     };
 
     src = x;
@@ -141,7 +136,7 @@ inline UInt64 unionCastToUInt64(Float32 x)
     union
     {
         Float32 src;
-        UInt64 res;
+        UInt64 res{};
     };
 
     res = 0;
@@ -149,20 +144,21 @@ inline UInt64 unionCastToUInt64(Float32 x)
     return res;
 }
 
-template <typename targetType, typename encodeType>
-inline targetType decodeInt(const char * pos)
+template <typename TargetType, typename EncodeType>
+inline TargetType decodeInt(const char * pos)
 {
-    if constexpr (std::is_same_v<targetType, Null>)
+    if constexpr (std::is_same_v<TargetType, Null>)
     {
         return Null{};
     }
-    else if constexpr (is_signed_v<targetType>)
+    else if constexpr (is_signed_v<TargetType>)
     {
-        return static_cast<targetType>(static_cast<std::make_signed_t<encodeType>>(readLittleEndian<encodeType>(pos)));
+        return static_cast<TargetType>(static_cast<std::make_signed_t<EncodeType>>(readLittleEndian<EncodeType>(pos)));
     }
     else
     {
-        return static_cast<targetType>(static_cast<std::make_unsigned_t<encodeType>>(readLittleEndian<encodeType>(pos)));
+        return static_cast<TargetType>(
+            static_cast<std::make_unsigned_t<EncodeType>>(readLittleEndian<EncodeType>(pos)));
     }
 }
 
@@ -205,10 +201,7 @@ private:
 public:
     bool isNumeric() const override { return is_arithmetic_v<T>; }
 
-    size_t size() const override
-    {
-        return data.size();
-    }
+    size_t size() const override { return data.size(); }
 
     StringRef getDataAt(size_t n) const override
     {
@@ -220,12 +213,29 @@ public:
         data.push_back(static_cast<const Self &>(src).getData()[n]);
     }
 
-    void insertData(const char * pos, size_t /*length*/) override
+    void insertManyFrom(const IColumn & src, size_t position, size_t length) override
     {
-        data.push_back(*reinterpret_cast<const T *>(pos));
+        const auto & value = static_cast<const Self &>(src).getData()[position];
+        data.resize_fill(data.size() + length, value);
     }
 
-    bool decodeTiDBRowV2Datum(size_t cursor, const String & raw_value, size_t length, bool force_decode [[maybe_unused]]) override
+    void insertDisjunctFrom(const IColumn & src, const std::vector<size_t> & position_vec) override
+    {
+        const auto & src_container = static_cast<const Self &>(src).getData();
+        size_t old_size = data.size();
+        size_t to_add_size = position_vec.size();
+        data.resize(old_size + to_add_size);
+        for (size_t i = 0; i < to_add_size; ++i)
+            data[i + old_size] = src_container[position_vec[i]];
+    }
+
+    void insertData(const char * pos, size_t /*length*/) override { data.push_back(*reinterpret_cast<const T *>(pos)); }
+
+    bool decodeTiDBRowV2Datum(
+        size_t cursor,
+        const String & raw_value,
+        size_t length,
+        bool force_decode [[maybe_unused]]) override
     {
         if constexpr (std::is_same_v<T, Float32> || std::is_same_v<T, Float64>)
         {
@@ -233,7 +243,7 @@ public:
             {
                 throw Exception("Invalid float value length " + std::to_string(length), ErrorCodes::LOGICAL_ERROR);
             }
-            constexpr UInt64 SIGN_MASK = UInt64(1) << 63;
+            constexpr UInt64 SIGN_MASK = static_cast<UInt64>(1) << 63;
             auto num = readBigEndian<UInt64>(raw_value.c_str() + cursor);
             if (num & SIGN_MASK)
                 num ^= SIGN_MASK;
@@ -254,8 +264,10 @@ public:
                 }
                 else
                 {
-                    throw Exception("Detected overflow when decoding integer of length " + std::to_string(length) + " with column type " + this->getName(),
-                                    ErrorCodes::LOGICAL_ERROR);
+                    throw Exception(
+                        "Detected overflow when decoding integer of length " + std::to_string(length)
+                            + " with column type " + this->getName(),
+                        ErrorCodes::LOGICAL_ERROR);
                 }
             }
 
@@ -280,43 +292,37 @@ public:
         return true;
     }
 
-    void insertDefault() override
+    void insertDefault() override { data.push_back(T()); }
+
+    void insertManyDefaults(size_t length) override { data.resize_fill(data.size() + length, T()); }
+
+    void popBack(size_t n) override { data.resize_assume_reserved(data.size() - n); }
+
+    StringRef serializeValueIntoArena(
+        size_t n,
+        Arena & arena,
+        char const *& begin,
+        const TiDB::TiDBCollatorPtr &,
+        String &) const override;
+
+    inline const char * deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &) override
     {
-        data.push_back(T());
+        data.push_back(*reinterpret_cast<const T *>(pos));
+        return pos + sizeof(T);
     }
-
-    void popBack(size_t n) override
-    {
-        data.resize_assume_reserved(data.size() - n);
-    }
-
-    StringRef serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const override;
-
-    const char * deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &) override;
 
     void updateHashWithValue(size_t n, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
-    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+        const override;
     void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
-    size_t byteSize() const override
-    {
-        return data.size() * sizeof(data[0]);
-    }
+    size_t byteSize() const override { return data.size() * sizeof(data[0]); }
 
-    size_t byteSize(size_t /*offset*/, size_t limit) const override
-    {
-        return limit * sizeof(data[0]);
-    }
+    size_t byteSize(size_t /*offset*/, size_t limit) const override { return limit * sizeof(data[0]); }
 
-    size_t allocatedBytes() const override
-    {
-        return data.allocated_bytes();
-    }
+    size_t allocatedBytes() const override { return data.allocated_bytes(); }
 
-    void insert(const T value)
-    {
-        data.push_back(value);
-    }
+    void insert(const T value) { data.push_back(value); }
 
     /// This method implemented in header because it could be possibly devirtualized.
     int compareAt(size_t n, size_t m, const IColumn & rhs_, int nan_direction_hint) const override
@@ -326,24 +332,15 @@ public:
 
     void getPermutation(bool reverse, size_t limit, int nan_direction_hint, IColumn::Permutation & res) const override;
 
-    void reserve(size_t n) override
-    {
-        data.reserve(n);
-    }
+    void reserve(size_t n) override { data.reserve(n); }
 
     const char * getFamilyName() const override;
 
     MutableColumnPtr cloneResized(size_t size) const override;
 
-    Field operator[](size_t n) const override
-    {
-        return typename NearestFieldType<T>::Type(data[n]);
-    }
+    Field operator[](size_t n) const override { return typename NearestFieldType<T>::Type(data[n]); }
 
-    void get(size_t n, Field & res) const override
-    {
-        res = typename NearestFieldType<T>::Type(data[n]);
-    }
+    void get(size_t n, Field & res) const override { res = typename NearestFieldType<T>::Type(data[n]); }
 
     UInt64 get64(size_t n) const override;
 
@@ -351,10 +348,7 @@ public:
 
     Int64 getInt(size_t n) const override;
 
-    void insert(const Field & x) override
-    {
-        data.push_back(DB::get<typename NearestFieldType<T>::Type>(x));
-    }
+    void insert(const Field & x) override { data.push_back(DB::get<typename NearestFieldType<T>::Type>(x)); }
 
     void insertRangeFrom(const IColumn & src, size_t start, size_t length) override;
 
@@ -362,13 +356,18 @@ public:
 
     ColumnPtr permute(const IColumn::Permutation & perm, size_t limit) const override;
 
-    ColumnPtr replicate(const IColumn::Offsets & offsets) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const override;
 
     void getExtremes(Field & min, Field & max) const override;
 
     MutableColumns scatter(IColumn::ColumnIndex num_columns, const IColumn::Selector & selector) const override
     {
         return this->template scatterImpl<Self>(num_columns, selector);
+    }
+
+    void scatterTo(IColumn::ScatterColumns & columns, const IColumn::Selector & selector) const override
+    {
+        this->template scatterToImpl<Self>(columns, selector);
     }
 
     void gather(ColumnGathererStream & gatherer_stream) override;
@@ -378,31 +377,16 @@ public:
     bool isFixedAndContiguous() const override { return true; }
     size_t sizeOfValueIfFixed() const override { return sizeof(T); }
 
-    StringRef getRawData() const override
-    {
-        return StringRef(reinterpret_cast<const char *>(data.data()), byteSize());
-    }
+    StringRef getRawData() const override { return StringRef(reinterpret_cast<const char *>(data.data()), byteSize()); }
 
     /** More efficient methods of manipulation - to manipulate with data directly. */
-    Container & getData()
-    {
-        return data;
-    }
+    Container & getData() { return data; }
 
-    const Container & getData() const
-    {
-        return data;
-    }
+    const Container & getData() const { return data; }
 
-    const T & getElement(size_t n) const
-    {
-        return data[n];
-    }
+    const T & getElement(size_t n) const { return data[n]; }
 
-    T & getElement(size_t n)
-    {
-        return data[n];
-    }
+    T & getElement(size_t n) { return data[n]; }
 
 protected:
     Container data;

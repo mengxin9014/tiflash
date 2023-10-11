@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 #include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsString.h>
-#include <Interpreters/Context.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
@@ -30,10 +29,7 @@ public:
     static constexpr auto func_name = "space";
 
 protected:
-    static ColumnWithTypeAndName toVec(const std::vector<String> & v)
-    {
-        return createColumn<String>(v);
-    }
+    static ColumnWithTypeAndName toVec(const std::vector<String> & v) { return createColumn<String>(v); }
     static ColumnWithTypeAndName toNullableVec(const std::vector<std::optional<String>> & v)
     {
         return createColumn<Nullable<String>>(v);
@@ -44,10 +40,7 @@ protected:
         return createColumn<Nullable<Int64>>(v);
     }
 
-    static ColumnWithTypeAndName toConst(const Int64 & v)
-    {
-        return createConstColumn<Int64>(8, v);
-    }
+    static ColumnWithTypeAndName toConst(const Int64 & v) { return createConstColumn<Int64>(8, v); }
 };
 
 // test space
@@ -56,9 +49,7 @@ try
 {
     ASSERT_COLUMN_EQ(
         toNullableVec({"  ", "", "          ", "", "      "}),
-        executeFunction(
-            func_name,
-            toVecInt({2, 0, 10, -1, 6})));
+        executeFunction(func_name, toVecInt({2, 0, 10, -1, 6})));
 }
 CATCH
 
@@ -66,17 +57,9 @@ CATCH
 TEST_F(StringSpace, nullTest)
 try
 {
-    ASSERT_COLUMN_EQ(
-        toNullableVec({{}, "     "}),
-        executeFunction(
-            func_name,
-            toVecInt({{}, 5})));
+    ASSERT_COLUMN_EQ(toNullableVec({{}, "     "}), executeFunction(func_name, toVecInt({{}, 5})));
 
-    ASSERT_COLUMN_EQ(
-        toNullableVec({{}}),
-        executeFunction(
-            func_name,
-            toVecInt({16777217})));
+    ASSERT_COLUMN_EQ(toNullableVec({{}}), executeFunction(func_name, toVecInt({16777217})));
 }
 CATCH
 

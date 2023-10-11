@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@
 #include <Parsers/ASTExpressionList.h>
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTLiteral.h>
-#include <Storages/Transaction/TypeMapping.h>
+#include <TiDB/Decode/TypeMapping.h>
 
 
 namespace DB
@@ -78,7 +78,12 @@ void NO_INLINE Set::insertFromBlockImplCase(
         if (has_null_map && (*null_map)[i])
             continue;
 
-        state.emplaceKey(method.data, i, variants.string_pool, sort_key_containers);
+        auto emplace_result = state.emplaceKey(method.data, i, variants.string_pool, sort_key_containers);
+
+        if (emplace_result.isInserted() && keys_size == 1)
+        {
+            unique_set_elements->emplace((*key_columns[0])[i]);
+        }
     }
 }
 
@@ -117,7 +122,7 @@ void Set::setHeader(const Block & block)
     extractNestedColumnsAndNullMap(key_columns, null_map_holder, null_map);
 
     /// Choose data structure to use for the set.
-    data.init(data.chooseMethod(key_columns, key_sizes));
+    data.init(data.chooseMethod(key_columns, key_sizes, collators));
 }
 
 
@@ -183,7 +188,7 @@ bool Set::insertFromBlock(const Block & block, bool fill_set_elements)
 
 static Field extractValueFromNode(ASTPtr & node, const IDataType & type, const Context & context)
 {
-    if (ASTLiteral * lit = typeid_cast<ASTLiteral *>(node.get()))
+    if (auto * lit = typeid_cast<ASTLiteral *>(node.get()))
     {
         return convertFieldToType(lit->value, type);
     }
@@ -193,7 +198,9 @@ static Field extractValueFromNode(ASTPtr & node, const IDataType & type, const C
         return convertFieldToType(value_raw.first, type, value_raw.second.get());
     }
     else
-        throw Exception("Incorrect element of set. Must be literal or constant expression.", ErrorCodes::INCORRECT_ELEMENT_OF_SET);
+        throw Exception(
+            "Incorrect element of set. Must be literal or constant expression.",
+            ErrorCodes::INCORRECT_ELEMENT_OF_SET);
 }
 
 
@@ -222,15 +229,16 @@ void Set::createFromAST(const DataTypes & types, ASTPtr node, const Context & co
             else
                 setContainsNullValue(true);
         }
-        else if (ASTFunction * func = typeid_cast<ASTFunction *>(elem.get()))
+        else if (auto * func = typeid_cast<ASTFunction *>(elem.get()))
         {
             if (func->name != "tuple")
                 throw Exception("Incorrect element of set. Must be tuple.", ErrorCodes::INCORRECT_ELEMENT_OF_SET);
 
             size_t tuple_size = func->arguments->children.size();
             if (tuple_size != num_columns)
-                throw Exception("Incorrect size of tuple in set: " + toString(tuple_size) + " instead of " + toString(num_columns),
-                                ErrorCodes::INCORRECT_ELEMENT_OF_SET);
+                throw Exception(
+                    "Incorrect size of tuple in set: " + toString(tuple_size) + " instead of " + toString(num_columns),
+                    ErrorCodes::INCORRECT_ELEMENT_OF_SET);
 
             if (tuple_values.empty())
                 tuple_values.resize(tuple_size);
@@ -259,7 +267,10 @@ void Set::createFromAST(const DataTypes & types, ASTPtr node, const Context & co
     insertFromBlock(block, fill_set_elements);
 }
 
-std::vector<const tipb::Expr *> Set::createFromDAGExpr(const DataTypes & types, const tipb::Expr & expr, bool fill_set_elements)
+std::vector<const tipb::Expr *> Set::createFromDAGExpr(
+    const DataTypes & types,
+    const tipb::Expr & expr,
+    bool fill_set_elements)
 {
     /// Will form a block with values from the set.
 
@@ -267,26 +278,28 @@ std::vector<const tipb::Expr *> Set::createFromDAGExpr(const DataTypes & types, 
     size_t num_columns = types.size();
     if (num_columns != 1)
     {
-        throw Exception("Incorrect element of set, tuple in is not supported yet", ErrorCodes::INCORRECT_ELEMENT_OF_SET);
+        throw Exception(
+            "Incorrect element of set, tuple in is not supported yet",
+            ErrorCodes::INCORRECT_ELEMENT_OF_SET);
     }
     for (size_t i = 0; i < num_columns; ++i)
         header.insert(ColumnWithTypeAndName(types[i]->createColumn(), types[i], "_" + toString(i)));
     setHeader(header);
 
     MutableColumns columns = header.cloneEmptyColumns();
-    std::vector<const tipb::Expr *> remainingExprs;
+    std::vector<const tipb::Expr *> remaining_exprs;
 
     // if left arg is null constant, just return without decode children expr
     if (types[0]->onlyNull())
-        return remainingExprs;
+        return remaining_exprs;
 
     for (int i = 1; i < expr.children_size(); i++)
     {
-        auto & child = expr.children(i);
+        const auto & child = expr.children(i);
         // todo support constant expression by constant folding
         if (!isLiteralExpr(child))
         {
-            remainingExprs.push_back(&child);
+            remaining_exprs.push_back(&child);
             continue;
         }
         Field value = decodeLiteral(child);
@@ -301,7 +314,7 @@ std::vector<const tipb::Expr *> Set::createFromDAGExpr(const DataTypes & types, 
 
     Block block = header.cloneWithColumns(std::move(columns));
     insertFromBlock(block, fill_set_elements);
-    return remainingExprs;
+    return remaining_exprs;
 }
 
 ColumnPtr Set::execute(const Block & block, bool negative) const
@@ -330,8 +343,8 @@ ColumnPtr Set::execute(const Block & block, bool negative) const
     if (data_types.size() != num_key_columns)
     {
         std::stringstream message;
-        message << "Number of columns in section IN doesn't match. "
-                << num_key_columns << " at left, " << data_types.size() << " at right.";
+        message << "Number of columns in section IN doesn't match. " << num_key_columns << " at left, "
+                << data_types.size() << " at right.";
         throw Exception(message.str(), ErrorCodes::NUMBER_OF_COLUMNS_DOESNT_MATCH);
     }
 
@@ -347,9 +360,10 @@ ColumnPtr Set::execute(const Block & block, bool negative) const
         key_columns.push_back(block.safeGetByPosition(i).column.get());
 
         if (!removeNullable(data_types[i])->equals(*removeNullable(block.safeGetByPosition(i).type)))
-            throw Exception("Types of column " + toString(i + 1) + " in section IN don't match: "
-                                + data_types[i]->getName() + " on the right, " + block.safeGetByPosition(i).type->getName() + " on the left.",
-                            ErrorCodes::TYPE_MISMATCH);
+            throw Exception(
+                "Types of column " + toString(i + 1) + " in section IN don't match: " + data_types[i]->getName()
+                    + " on the right, " + block.safeGetByPosition(i).type->getName() + " on the left.",
+                ErrorCodes::TYPE_MISMATCH);
 
         if (ColumnPtr converted = key_columns.back()->convertToFullColumnIfConst())
         {

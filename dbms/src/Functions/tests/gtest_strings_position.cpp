@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 #include <DataTypes/DataTypesNumber.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsString.h>
-#include <Interpreters/Context.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
@@ -42,7 +41,7 @@ class StringPosition : public DB::tests::FunctionTest
 // test string and string
 TEST_F(StringPosition, strAndStrTest)
 {
-    const Context context = TiFlashTestEnv::getContext();
+    const auto context = TiFlashTestEnv::getContext();
 
     auto & factory = FunctionFactory::instance();
 
@@ -76,8 +75,10 @@ TEST_F(StringPosition, strAndStrTest)
         }
 
         Block test_block;
-        ColumnWithTypeAndName ctn0 = ColumnWithTypeAndName(std::move(csp0), std::make_shared<DataTypeString>(), "test_position_0");
-        ColumnWithTypeAndName ctn1 = ColumnWithTypeAndName(std::move(csp1), std::make_shared<DataTypeString>(), "test_position_1");
+        ColumnWithTypeAndName ctn0
+            = ColumnWithTypeAndName(std::move(csp0), std::make_shared<DataTypeString>(), "test_position_0");
+        ColumnWithTypeAndName ctn1
+            = ColumnWithTypeAndName(std::move(csp1), std::make_shared<DataTypeString>(), "test_position_1");
         ColumnsWithTypeAndName ctns{ctn0, ctn1};
         test_block.insert(ctn0);
         test_block.insert(ctn1);
@@ -86,7 +87,7 @@ TEST_F(StringPosition, strAndStrTest)
         ColumnNumbers cns{0, 1};
 
         // test position
-        auto bp = factory.tryGet("position", context);
+        auto bp = factory.tryGet("position", *context);
         ASSERT_TRUE(bp != nullptr);
         ASSERT_FALSE(bp->isVariadic());
 
@@ -108,7 +109,7 @@ TEST_F(StringPosition, strAndStrTest)
 // test string and string in utf8
 TEST_F(StringPosition, utf8StrAndStrTest)
 {
-    const Context context = TiFlashTestEnv::getContext();
+    const auto context = TiFlashTestEnv::getContext();
 
     auto & factory = FunctionFactory::instance();
 
@@ -143,8 +144,10 @@ TEST_F(StringPosition, utf8StrAndStrTest)
         }
 
         Block test_block;
-        ColumnWithTypeAndName ctn0 = ColumnWithTypeAndName(std::move(csp0), std::make_shared<DataTypeString>(), "test_position_0");
-        ColumnWithTypeAndName ctn1 = ColumnWithTypeAndName(std::move(csp1), std::make_shared<DataTypeString>(), "test_position_1");
+        ColumnWithTypeAndName ctn0
+            = ColumnWithTypeAndName(std::move(csp0), std::make_shared<DataTypeString>(), "test_position_0");
+        ColumnWithTypeAndName ctn1
+            = ColumnWithTypeAndName(std::move(csp1), std::make_shared<DataTypeString>(), "test_position_1");
         ColumnsWithTypeAndName ctns{ctn0, ctn1};
         test_block.insert(ctn0);
         test_block.insert(ctn1);
@@ -153,7 +156,7 @@ TEST_F(StringPosition, utf8StrAndStrTest)
         ColumnNumbers cns{0, 1};
 
         // test position
-        auto bp = factory.tryGet("position", context);
+        auto bp = factory.tryGet("position", *context);
         ASSERT_TRUE(bp != nullptr);
         ASSERT_FALSE(bp->isVariadic());
 
@@ -175,7 +178,7 @@ TEST_F(StringPosition, utf8StrAndStrTest)
 // test NULL
 TEST_F(StringPosition, nullTest)
 {
-    const Context context = TiFlashTestEnv::getContext();
+    const auto context = TiFlashTestEnv::getContext();
 
     auto & factory = FunctionFactory::instance();
 
@@ -221,7 +224,7 @@ TEST_F(StringPosition, nullTest)
     test_block.insert(col1);
     ColumnNumbers cns{0, 1};
 
-    auto bp = factory.tryGet("position", context);
+    auto bp = factory.tryGet("position", *context);
     ASSERT_TRUE(bp != nullptr);
     ASSERT_FALSE(bp->isVariadic());
     auto func = bp->build(ctns);

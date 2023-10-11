@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/TiFlashMetrics.h>
 #include <Encryption/PosixWritableFile.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -91,6 +92,11 @@ ssize_t PosixWritableFile::pwrite(char * buf, size_t size, off_t offset) const
     return ::pwrite(fd, buf, size, offset);
 }
 
+off_t PosixWritableFile::seek(off_t offset, int whence) const
+{
+    return ::lseek(fd, offset, whence);
+}
+
 void PosixWritableFile::doOpenFile(bool truncate_when_exists_, int flags, mode_t mode)
 {
     ProfileEvents::increment(ProfileEvents::FileOpen);
@@ -113,7 +119,9 @@ void PosixWritableFile::doOpenFile(bool truncate_when_exists_, int flags, mode_t
     if (-1 == fd)
     {
         ProfileEvents::increment(ProfileEvents::FileOpenFailed);
-        throwFromErrno("Cannot open file " + file_name, errno == ENOENT ? ErrorCodes::FILE_DOESNT_EXIST : ErrorCodes::CANNOT_OPEN_FILE);
+        throwFromErrno(
+            "Cannot open file " + file_name,
+            errno == ENOENT ? ErrorCodes::FILE_DOESNT_EXIST : ErrorCodes::CANNOT_OPEN_FILE);
     }
 
     metric_increment.changeTo(1); // Add metrics for `CurrentMetrics::OpenFileForWrite`
@@ -133,6 +141,8 @@ void PosixWritableFile::doOpenFile(bool truncate_when_exists_, int flags, mode_t
 int PosixWritableFile::fsync()
 {
     ProfileEvents::increment(ProfileEvents::FileFSync);
+    Stopwatch sw;
+    SCOPE_EXIT({ GET_METRIC(tiflash_system_seconds, type_fsync).Observe(sw.elapsedSeconds()); });
     return ::fsync(fd);
 }
 
@@ -150,7 +160,9 @@ void PosixWritableFile::hardLink(const std::string & existing_file)
 
     if (file_name.empty())
     {
-        throw Exception("Failed to create hard link for:" + existing_file + " to an empty path", ErrorCodes::LOGICAL_ERROR);
+        throw Exception(
+            "Failed to create hard link for:" + existing_file + " to an empty path",
+            ErrorCodes::LOGICAL_ERROR);
     }
 
     close();
@@ -167,7 +179,9 @@ void PosixWritableFile::hardLink(const std::string & existing_file)
     rc = ::link(existing_file.c_str(), file_name.c_str());
     if (rc != 0)
     {
-        throw Exception("Failed to create hard link for:" + existing_file + " to an empty path", ErrorCodes::LOGICAL_ERROR);
+        throw Exception(
+            "Failed to create hard link for:" + existing_file + " to an empty path",
+            ErrorCodes::LOGICAL_ERROR);
     }
 }
 

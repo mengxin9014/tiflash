@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,8 +34,6 @@ __attribute__((noinline, flatten)) typename DT_CLASS::InternPtr DT_CLASS::TIFLAS
             as(Intern, root)->parent = nullptr;
         --height;
 
-        LOG_TRACE(log, "height {} -> {}", (height + 1), height);
-
         return {};
     }
 
@@ -57,7 +55,6 @@ __attribute__((noinline, flatten)) typename DT_CLASS::InternPtr DT_CLASS::TIFLAS
 
             ++height;
 
-            LOG_TRACE(log, "height {} -> {}", (height - 1), height);
         }
 
         auto pos = parent->searchChild(asNode(node));

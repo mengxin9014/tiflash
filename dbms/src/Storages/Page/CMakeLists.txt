@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,5 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_subdirectory(V2)
+include(${TiFlash_SOURCE_DIR}/cmake/dbms_glob_sources.cmake)
+
+add_subdirectory (./V3/CheckpointFile/Proto)
+
+add_headers_and_sources(page .)
+add_headers_and_sources(page ./V2)
+add_headers_and_sources(page ./V2/mvcc)
+add_headers_and_sources(page ./V2/VersionSet)
+add_headers_and_sources(page ./V2/gc)
+add_headers_and_sources(page ./V3)
+add_headers_and_sources(page ./V3/Blob)
+add_headers_and_sources(page ./V3/LogFile)
+add_headers_and_sources(page ./V3/PageDirectory)
+add_headers_and_sources(page ./V3/spacemap)
+add_headers_and_sources(page ./V3/Universal)
+add_headers_and_sources(page ./V3/CheckpointFile)
+add_headers_and_sources(page ./V3/WAL)
+
+add_library(page ${page_headers} ${page_sources})
+target_link_libraries(page PRIVATE dbms)
+
+add_subdirectory(workload)
 add_subdirectory(tools)
+
+if (ENABLE_TESTS)
+    add_subdirectory (V2/tests EXCLUDE_FROM_ALL)
+    add_subdirectory (V3/tests EXCLUDE_FROM_ALL)
+endif ()

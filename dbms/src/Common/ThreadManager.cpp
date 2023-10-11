@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 #include <Common/ThreadFactory.h>
 #include <Common/ThreadManager.h>
 #include <Common/wrapInvocable.h>
+#include <common/ThreadPool.h>
 
 namespace DB
 {
@@ -62,10 +63,7 @@ public:
         futures.push_back(DynamicThreadPool::global_instance->schedule(propagate_memory_tracker, std::move(job)));
     }
 
-    void wait() override
-    {
-        waitTasks(futures);
-    }
+    void wait() override { waitTasks(futures); }
 
 protected:
     std::vector<std::future<void>> futures;
@@ -86,15 +84,9 @@ public:
         t.detach();
     }
 
-    void wait() override
-    {
-        waitAndClear();
-    }
+    void wait() override { waitAndClear(); }
 
-    ~RawThreadManager() override
-    {
-        waitAndClear();
-    }
+    ~RawThreadManager() override { waitAndClear(); }
 
 protected:
     void waitAndClear()
@@ -119,13 +111,10 @@ public:
         pool.schedule(wrapInvocable(propagate_memory_tracker, std::move(job)));
     }
 
-    void wait() override
-    {
-        pool.wait();
-    }
+    void wait() override { pool.wait(); }
 
 protected:
-    ThreadPool pool;
+    legacy::ThreadPool pool;
 };
 } // namespace
 

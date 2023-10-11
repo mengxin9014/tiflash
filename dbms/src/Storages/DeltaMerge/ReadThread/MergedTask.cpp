@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -122,5 +122,18 @@ void MergedTaskPool::push(const MergedTaskPtr & t)
 {
     std::lock_guard lock(mtx);
     merged_task_pool.push_back(t);
+}
+
+bool MergedTaskPool::has(UInt64 pool_id)
+{
+    std::lock_guard lock(mtx);
+    for (const auto & t : merged_task_pool)
+    {
+        if (t->containPool(pool_id))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 } // namespace DB::DM

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@
 
 #include <Common/CPUAffinityManager.h>
 #include <Common/Exception.h>
+#include <Common/Logger.h>
 #include <Common/setThreadName.h>
 #include <Poco/DirectoryIterator.h>
-#include <Poco/Logger.h>
 #include <Poco/Util/LayeredConfiguration.h>
 #include <boost_wrapper/string.h>
 #include <common/logger_useful.h>
@@ -75,7 +75,7 @@ CPUAffinityManager & CPUAffinityManager::getInstance()
 CPUAffinityManager::CPUAffinityManager()
     : query_cpu_percent(0)
     , cpu_cores(0)
-    , log(&Poco::Logger::get("CPUAffinityManager"))
+    , log(Logger::get())
 {}
 
 #ifdef __linux__

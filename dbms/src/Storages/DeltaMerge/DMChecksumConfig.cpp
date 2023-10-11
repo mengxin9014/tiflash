@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,19 +14,14 @@
 
 #include <Common/TiFlashException.h>
 #include <IO/ChecksumBuffer.h>
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#include <dmfile.pb.h>
-#pragma GCC diagnostic pop
-
+#include <Interpreters/Context.h>
 #include <Storages/DeltaMerge/DMChecksumConfig.h>
+#include <Storages/DeltaMerge/File/dtpb/dmfile.pb.h>
 #include <Storages/FormatVersion.h>
+
 namespace DB::DM
 {
 DMChecksumConfig::DMChecksumConfig(std::istream & input)
-    : embedded_checksum()
-    , debug_info()
 {
     dtpb::ChecksumConfig configuration;
     if (unlikely(!configuration.ParseFromIstream(&input)))
@@ -102,7 +97,7 @@ std::ostream & operator<<(std::ostream & output, const DMChecksumConfig & config
         {
             digest->update(name.data(), name.length());
             digest->update(checksum.data(), checksum.length());
-            auto embedded_checksum = configuration.add_embedded_checksum();
+            auto * embedded_checksum = configuration.add_embedded_checksum();
             embedded_checksum->set_name(name);
             embedded_checksum->set_checksum(checksum);
         }
@@ -113,7 +108,7 @@ std::ostream & operator<<(std::ostream & output, const DMChecksumConfig & config
     {
         for (const auto & [name, content] : config.debug_info)
         {
-            auto tmp = configuration.add_debug_info();
+            auto * tmp = configuration.add_debug_info();
             tmp->set_name(name);
             tmp->set_content(content);
         }
@@ -127,12 +122,18 @@ std::ostream & operator<<(std::ostream & output, const DMChecksumConfig & config
     return output;
 }
 
-std::optional<DMChecksumConfig> DMChecksumConfig::fromDBContext(const Context & context, bool is_single_file)
+std::optional<DMChecksumConfig> DMChecksumConfig::fromDBContext(const Context & context)
 {
-    return !is_single_file && STORAGE_FORMAT_CURRENT.dm_file >= DMFileFormat::V2
+    return STORAGE_FORMAT_CURRENT.dm_file >= DMFileFormat::V2
         ? std::make_optional<DM::DMChecksumConfig>(DMChecksumConfig{context})
         : std::nullopt;
-};
+}
+
+DMChecksumConfig::DMChecksumConfig(const Context & context)
+    : DMChecksumConfig(
+        {},
+        context.getSettingsRef().dt_checksum_frame_size.get(),
+        context.getSettingsRef().dt_checksum_algorithm.get()){};
 
 
 } // namespace DB::DM

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,6 +24,9 @@ static Poco::Logger * getLogger()
     static Poco::Logger * logger = &Poco::Logger::get("ThreadPool");
     return logger;
 }
+
+namespace legacy
+{
 
 ThreadPool::ThreadPool(size_t m_size, Job pre_worker)
     : m_size(m_size)
@@ -151,3 +154,5 @@ void ThreadPool::worker()
         has_free_thread.notify_all();
     }
 }
+
+} // namespace legacy

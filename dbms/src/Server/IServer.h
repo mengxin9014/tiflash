@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,9 @@
 #pragma once
 
 #include <Common/TiFlashSecurity.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Poco/Logger.h>
 #include <Poco/Util/LayeredConfiguration.h>
-
 
 namespace DB
 {
@@ -34,8 +33,6 @@ public:
 
     /// Returns global application's context.
     virtual Context & context() const = 0;
-
-    virtual const TiFlashSecurityConfig & securityConfig() const = 0;
 
     /// Returns true if shutdown signaled.
     virtual bool isCancelled() const = 0;

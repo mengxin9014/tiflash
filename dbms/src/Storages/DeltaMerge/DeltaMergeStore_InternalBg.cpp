@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,14 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/FailPoint.h>
 #include <Common/SyncPoint/SyncPoint.h>
 #include <Common/TiFlashMetrics.h>
+#include <Encryption/FileProvider.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/SharedContexts/Disagg.h>
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/GCOptions.h>
 #include <Storages/DeltaMerge/Segment.h>
-#include <Storages/Transaction/TMTContext.h>
+#include <Storages/DeltaMerge/StoragePool.h>
+#include <Storages/KVStore/KVStore.h>
+#include <Storages/KVStore/TMTContext.h>
+#include <Storages/PathPool.h>
 
 #include <magic_enum.hpp>
+#include <memory>
 
 namespace CurrentMetrics
 {
@@ -36,20 +44,32 @@ extern const char pause_until_dt_background_delta_merge[];
 
 namespace DM
 {
-void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
+// A callback class for scanning the DMFiles on local filesystem
+class LocalDMFileGcScanner final
 {
-    // Callbacks for cleaning outdated DTFiles. Note that there is a chance
-    // that callbacks is called after the `DeltaMergeStore` dropped, we must
-    // make the callbacks safe.
-    ExternalPageCallbacks callbacks;
-    callbacks.ns_id = storage_pool->getNamespaceId();
-    callbacks.scanner = [path_pool_weak_ref = std::weak_ptr<StoragePathPool>(path_pool), file_provider = global_context.getFileProvider()]() {
+private:
+    // !!! Warning !!!
+    // Should only keep a weak ref of storage path pool since
+    // this callback instance may still valid inside the PageStorage
+    // even after the DeltaMerge storage is shutdown or released.
+    std::weak_ptr<StoragePathPool> path_pool_weak_ref;
+    FileProviderPtr file_provider;
+
+public:
+    LocalDMFileGcScanner(std::weak_ptr<StoragePathPool> path_pool_, FileProviderPtr provider)
+        : path_pool_weak_ref(std::move(path_pool_))
+        , file_provider(std::move(provider))
+    {}
+
+    ExternalPageCallbacks::PathAndIdsVec operator()()
+    {
         ExternalPageCallbacks::PathAndIdsVec path_and_ids_vec;
 
-        // If the StoragePathPool is invalid, meaning we call `scanner` after dropping the table,
+        // If the StoragePathPool is invalid or shutdown flag is set,
+        // meaning we call `scanner` after shutdowning or dropping the table,
         // simply return an empty list is OK.
         auto path_pool = path_pool_weak_ref.lock();
-        if (!path_pool)
+        if (!path_pool || path_pool->isShutdown())
             return path_and_ids_vec;
 
         // Return the DTFiles on disks.
@@ -61,19 +81,42 @@ void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
         options.only_list_can_gc = true;
         for (auto & root_path : delegate.listPaths())
         {
-            std::set<PageId> ids_under_path;
+            std::set<PageIdU64> ids_under_path;
             auto file_ids_in_current_path = DMFile::listAllInPath(file_provider, root_path, options);
             path_and_ids_vec.emplace_back(root_path, std::move(file_ids_in_current_path));
         }
         return path_and_ids_vec;
-    };
-    callbacks.remover = [path_pool_weak_ref = std::weak_ptr<StoragePathPool>(path_pool), //
-                         file_provider = global_context.getFileProvider(),
-                         logger = log](const ExternalPageCallbacks::PathAndIdsVec & path_and_ids_vec, const std::set<PageId> & valid_ids) {
-        // If the StoragePathPool is invalid, meaning we call `remover` after dropping the table,
-        // simply skip is OK.
+    }
+};
+
+// A callback class for removing the DMFiles on local filesystem
+class LocalDMFileGcRemover final
+{
+private:
+    // !!! Warning !!!
+    // Should only keep a weak ref of storage path pool since
+    // this callback instance may still valid inside the PageStorage
+    // even after the DeltaMerge storage is shutdown or released.
+    std::weak_ptr<StoragePathPool> path_pool_weak_ref;
+    FileProviderPtr file_provider;
+    LoggerPtr logger;
+
+public:
+    LocalDMFileGcRemover(std::weak_ptr<StoragePathPool> path_pool_, FileProviderPtr provider, LoggerPtr log)
+        : path_pool_weak_ref(std::move(path_pool_))
+        , file_provider(std::move(provider))
+        , logger(std::move(log))
+    {}
+
+    void operator()(
+        const ExternalPageCallbacks::PathAndIdsVec & path_and_ids_vec,
+        const std::set<PageIdU64> & valid_ids)
+    {
+        // If the StoragePathPool is invalid or shutdown flag is set,
+        // meaning we call `remover` after shutdowning or dropping the table,
+        // we must skip because the `valid_ids` is not reliable!
         auto path_pool = path_pool_weak_ref.lock();
-        if (!path_pool)
+        if (!path_pool || path_pool->isShutdown())
             return;
 
         SYNC_FOR("before_DeltaMergeStore::callbacks_remover_remove");
@@ -99,9 +142,11 @@ void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
                     {
                         // just ignore
                     }
-                    LOG_INFO(logger,
-                             "GC try remove useless DM file, but file not found and may have been removed, dmfile={}",
-                             DMFile::getPathByStatus(path, id, DMFile::Status::READABLE));
+                    LOG_INFO(
+                        logger,
+                        "GC try remove useless DM file, but file not found and may have been removed, dmfile={}",
+                        DMFile::getPathByStatus(path, id, DMFile::Status::READABLE));
+                    continue; // next file
                 }
                 else if (dmfile->canGC())
                 {
@@ -125,24 +170,132 @@ void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
                     if (err_msg.empty())
                         LOG_INFO(logger, "GC removed useless DM file, dmfile={}", dmfile->path());
                     else
-                        LOG_INFO(logger, "GC try remove useless DM file, but error happen, dmfile={} err_msg={}", dmfile->path(), err_msg);
+                        LOG_INFO(
+                            logger,
+                            "GC try remove useless DM file, but error happen, dmfile={} err_msg={}",
+                            dmfile->path(),
+                            err_msg);
+                    continue; // next file
                 }
             }
         }
-    };
+    }
+};
+
+// A callback class for find out the DMFiles on S3 referenced by this store.
+class S3DMFileGcScanner final
+{
+private:
+    // !!! Warning !!!
+    // Should only keep a weak ref of storage path pool since
+    // this callback instance may still valid inside the PageStorage
+    // even after the DeltaMerge storage is shutdown or released.
+    std::weak_ptr<StoragePathPool> path_pool_weak_ref;
+
+public:
+    explicit S3DMFileGcScanner(std::weak_ptr<StoragePathPool> path_pool_)
+        : path_pool_weak_ref(std::move(path_pool_))
+    {}
+
+    ExternalPageCallbacks::PathAndIdsVec operator()()
+    {
+        ExternalPageCallbacks::PathAndIdsVec path_and_ids_vec;
+
+        // If the StoragePathPool is invalid or shutdown flag is set,
+        // meaning we call `scanner` after shutdowning or dropping the table,
+        // simply return an empty list is OK.
+        auto path_pool = path_pool_weak_ref.lock();
+        if (!path_pool || path_pool->isShutdown())
+            return path_and_ids_vec;
+
+        auto delegate = path_pool->getStableDiskDelegator();
+        auto local_page_ids = delegate.getAllRemoteDTFilesForGC();
+        // path here is useless, just pass empty string here.
+        path_and_ids_vec.emplace_back("", std::move(local_page_ids));
+        return path_and_ids_vec;
+    }
+};
+
+// A callback class for removing the reference to DMFiles on S3 from local delegator.
+// The actual GC of DMFiles on S3 is managed by other class.
+class S3DMFileGcRemover final
+{
+private:
+    // !!! Warning !!!
+    // Should only keep a weak ref of storage path pool since
+    // this callback instance may still valid inside the PageStorage
+    // even after the DeltaMerge storage is shutdown or released.
+    std::weak_ptr<StoragePathPool> path_pool_weak_ref;
+    LoggerPtr logger;
+
+public:
+    explicit S3DMFileGcRemover(std::weak_ptr<StoragePathPool> path_pool_, LoggerPtr log)
+        : path_pool_weak_ref(std::move(path_pool_))
+        , logger(std::move(log))
+    {}
+
+    void operator()(
+        const ExternalPageCallbacks::PathAndIdsVec & path_and_ids_vec,
+        const std::set<PageIdU64> & valid_ids)
+    {
+        // If the StoragePathPool is invalid or shutdown flag is set,
+        // meaning we call `remover` after shutdowning or dropping the table,
+        // we must skip because the `valid_ids` is not reliable!
+        auto path_pool = path_pool_weak_ref.lock();
+        if (!path_pool || path_pool->isShutdown())
+            return;
+
+        auto delegate = path_pool->getStableDiskDelegator();
+        for (const auto & [path, ids] : path_and_ids_vec)
+        {
+            for (auto id : ids)
+            {
+                if (!valid_ids.count(id))
+                {
+                    delegate.removeRemoteDTFile(id);
+                    LOG_DEBUG(logger, "GC removed remote DM file [id={}]", id);
+                }
+            }
+        }
+    }
+};
+
+void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
+{
+    // Callbacks for cleaning outdated DTFiles. Note that there is a chance
+    // that callbacks is called after the `DeltaMergeStore` shutdown or dropped,
+    // we must make the callbacks safe.
+    ExternalPageCallbacks callbacks;
+    callbacks.prefix = storage_pool->getNamespaceID();
+    if (auto data_store = dm_context->db_context.getSharedContextDisagg()->remote_data_store; !data_store)
+    {
+        callbacks.scanner
+            = LocalDMFileGcScanner(std::weak_ptr<StoragePathPool>(path_pool), global_context.getFileProvider());
+        callbacks.remover
+            = LocalDMFileGcRemover(std::weak_ptr<StoragePathPool>(path_pool), global_context.getFileProvider(), log);
+    }
+    else
+    {
+        callbacks.scanner = S3DMFileGcScanner(std::weak_ptr<StoragePathPool>(path_pool));
+        callbacks.remover = S3DMFileGcRemover(std::weak_ptr<StoragePathPool>(path_pool), log);
+    }
     // remember to unregister it when shutdown
-    storage_pool->dataRegisterExternalPagesCallbacks(callbacks);
-    storage_pool->enableGC();
+    storage_pool->startup(std::move(callbacks));
 
     background_task_handle = background_pool.addTask([this] { return handleBackgroundTask(false); });
 
     blockable_background_pool_handle = blockable_background_pool.addTask([this] { return handleBackgroundTask(true); });
 
-    // Do place delta index.
-    for (auto & [end, segment] : segments)
+    // Under disagg mode, a write node could serve large amount of data, place delta index tasks
+    // after restart is useless and waste of S3 reading. Only do it when deployed non-disagg mode.
+    if (global_context.getSharedContextDisagg()->notDisaggregatedMode())
     {
-        (void)end;
-        checkSegmentUpdate(dm_context, segment, ThreadType::Init);
+        // Generate place delta index tasks
+        for (auto & [end, segment] : segments)
+        {
+            (void)end;
+            checkSegmentUpdate(dm_context, segment, ThreadType::Init, InputType::NotRaft);
+        }
     }
 
     // Wake up to do place delta index tasks.
@@ -150,7 +303,9 @@ void DeltaMergeStore::setUpBackgroundTask(const DMContextPtr & dm_context)
     blockable_background_pool_handle->wake();
 }
 
-std::vector<SegmentPtr> DeltaMergeStore::getMergeableSegments(const DMContextPtr & context, const SegmentPtr & baseSegment)
+std::vector<SegmentPtr> DeltaMergeStore::getMergeableSegments(
+    const DMContextPtr & context,
+    const SegmentPtr & baseSegment)
 {
     // Last segment cannot be merged.
     if (baseSegment->getRowKeyRange().isEndInfinite())
@@ -160,8 +315,8 @@ std::vector<SegmentPtr> DeltaMergeStore::getMergeableSegments(const DMContextPtr
     // Note: it is possible that there is a very small segment close to a very large segment.
     // In this case, the small segment will not get merged. It is possible that we can allow
     // segment merging for this case in future.
-    auto max_total_rows = context->small_segment_rows;
-    auto max_total_bytes = context->small_segment_bytes;
+    auto max_total_rows = context->segment_limit_rows;
+    auto max_total_bytes = context->segment_limit_bytes;
 
     std::vector<SegmentPtr> results;
     {
@@ -202,6 +357,7 @@ bool DeltaMergeStore::updateGCSafePoint()
     {
         auto safe_point = PDClientHelper::getGCSafePointWithRetry(
             pd_client,
+            keyspace_id,
             /* ignore_cache= */ false,
             global_context.getSettingsRef().safe_point_update_interval_seconds);
         latest_gc_safe_point.store(safe_point, std::memory_order_release);
@@ -256,6 +412,11 @@ bool DeltaMergeStore::handleBackgroundTask(bool heavy)
             left = task.segment;
             type = ThreadType::BG_Flush;
             break;
+        case TaskType::FlushDTAndKVStore:
+        {
+            // TODO(proactive flush)
+            break;
+        }
         case TaskType::PlaceIndex:
             task.segment->placeDeltaIndex(*task.dm_context);
             break;
@@ -281,9 +442,9 @@ bool DeltaMergeStore::handleBackgroundTask(bool heavy)
 
     // continue to check whether we need to apply more tasks after this task is ended.
     if (left)
-        checkSegmentUpdate(task.dm_context, left, type);
+        checkSegmentUpdate(task.dm_context, left, type, InputType::NotRaft);
     if (right)
-        checkSegmentUpdate(task.dm_context, right, type);
+        checkSegmentUpdate(task.dm_context, right, type, InputType::NotRaft);
 
     return true;
 }
@@ -316,7 +477,11 @@ static std::string toString(MergeDeltaReason type)
 
 // Returns true if it needs gc.
 // This is for optimization purpose, does not mean to be accurate.
-bool shouldCompactStableWithTooManyInvalidVersion(const SegmentPtr & seg, DB::Timestamp gc_safepoint, double ratio_threshold, const LoggerPtr & log)
+bool shouldCompactStableWithTooManyInvalidVersion(
+    const SegmentPtr & seg,
+    DB::Timestamp gc_safepoint,
+    double ratio_threshold,
+    const LoggerPtr & log)
 {
     // Always GC.
     if (ratio_threshold < 1.0)
@@ -336,7 +501,13 @@ bool shouldCompactStableWithTooManyInvalidVersion(const SegmentPtr & seg, DB::Ti
     return false;
 }
 
-bool shouldCompactDeltaWithStable(const DMContext & context, const SegmentPtr & segment, const SegmentSnapshotPtr & snap, const RowKeyRange & segment_range, double invalid_data_ratio_threshold, const LoggerPtr & log)
+bool shouldCompactDeltaWithStable(
+    const DMContext & context,
+    const SegmentPtr & segment,
+    const SegmentSnapshotPtr & snap,
+    const RowKeyRange & segment_range,
+    double invalid_data_ratio_threshold,
+    const LoggerPtr & log)
 {
     auto actual_delete_range = snap->delta->getSquashDeleteRange().shrink(segment_range);
     if (actual_delete_range.none())
@@ -354,7 +525,8 @@ bool shouldCompactDeltaWithStable(const DMContext & context, const SegmentPtr & 
     //   because before write apply snapshot file, it will write a delete range first, and will meet the following gc criteria.
     //   But the cost should be really minor because merge delta on an empty segment should be very fast.
     //   What's more, we can ignore this kind of delete range in future to avoid this extra gc.
-    auto check_result = (delete_rows >= stable_rows * invalid_data_ratio_threshold) || (delete_bytes >= stable_bytes * invalid_data_ratio_threshold);
+    auto check_result = (delete_rows >= stable_rows * invalid_data_ratio_threshold)
+        || (delete_bytes >= stable_bytes * invalid_data_ratio_threshold);
 
     LOG_TRACE(
         log,
@@ -388,13 +560,14 @@ std::unordered_set<UInt64> getDMFileIDs(const SegmentPtr & seg)
     return file_ids;
 }
 
-bool shouldCompactStableWithTooMuchDataOutOfSegmentRange(const DMContext & context, //
-                                                         const SegmentPtr & seg,
-                                                         const SegmentSnapshotPtr & snap,
-                                                         const SegmentPtr & prev_seg,
-                                                         const SegmentPtr & next_seg,
-                                                         double invalid_data_ratio_threshold,
-                                                         const LoggerPtr & log)
+bool shouldCompactStableWithTooMuchDataOutOfSegmentRange(
+    const DMContext & context, //
+    const SegmentPtr & seg,
+    const SegmentSnapshotPtr & snap,
+    const SegmentPtr & prev_seg,
+    const SegmentPtr & next_seg,
+    double invalid_data_ratio_threshold,
+    const LoggerPtr & log)
 {
     if (snap->stable->getDMFilesPacks() == 0)
     {
@@ -410,9 +583,11 @@ bool shouldCompactStableWithTooMuchDataOutOfSegmentRange(const DMContext & conte
     if (at_least_result.first_pack_intersection == RSResult::All //
         && at_least_result.last_pack_intersection == RSResult::All)
     {
-        LOG_TRACE(log, "GC - shouldCompactStableWithTooMuchDataOutOfSegmentRange permanently skipped segment "
-                       "because all packs in DTFiles are fully contained by the segment range, segment={}",
-                  seg->info());
+        LOG_TRACE(
+            log,
+            "GC - shouldCompactStableWithTooMuchDataOutOfSegmentRange permanently skipped segment "
+            "because all packs in DTFiles are fully contained by the segment range, segment={}",
+            seg->info());
         seg->setValidDataRatioChecked();
         return false;
     }
@@ -455,9 +630,7 @@ bool shouldCompactStableWithTooMuchDataOutOfSegmentRange(const DMContext & conte
                 fmt_buf.joinStr(
                     dt_files.begin(),
                     dt_files.end(),
-                    [](const DMFilePtr & dt_file, FmtBuffer & fb) {
-                        fb.fmtAppend("{}", dt_file->fileId());
-                    },
+                    [](const DMFilePtr & dt_file, FmtBuffer & fb) { fb.fmtAppend("{}", dt_file->fileId()); },
                     ",");
                 return fmt_buf.toString();
             }(),
@@ -498,7 +671,8 @@ bool shouldCompactStableWithTooMuchDataOutOfSegmentRange(const DMContext & conte
     LOG_TRACE(
         log,
         "GC - Checking shouldCompactStableWithTooMuchDataOutOfSegmentRange, "
-        "check_result={} first_pack_inc={} last_pack_inc={} rows_at_least={} bytes_at_least={} file_rows={} file_bytes={} segment={} ",
+        "check_result={} first_pack_inc={} last_pack_inc={} rows_at_least={} bytes_at_least={} file_rows={} "
+        "file_bytes={} segment={} ",
         check_result,
         magic_enum::enum_name(at_least_result.first_pack_intersection),
         magic_enum::enum_name(at_least_result.last_pack_intersection),
@@ -517,7 +691,7 @@ SegmentPtr DeltaMergeStore::gcTrySegmentMerge(const DMContextPtr & dm_context, c
 {
     auto segment_rows = segment->getEstimatedRows();
     auto segment_bytes = segment->getEstimatedBytes();
-    if (segment_rows >= dm_context->small_segment_rows || segment_bytes >= dm_context->small_segment_bytes)
+    if (segment_rows >= dm_context->segment_limit_rows || segment_bytes >= dm_context->segment_limit_bytes)
     {
         LOG_TRACE(
             log,
@@ -538,21 +712,22 @@ SegmentPtr DeltaMergeStore::gcTrySegmentMerge(const DMContextPtr & dm_context, c
         return {};
     }
 
-    LOG_INFO(
-        log,
-        "GC - Trigger Merge, segment={} table={}",
-        segment->simpleInfo(),
-        table_name);
+    LOG_INFO(log, "GC - Trigger Merge, segment={} table={}", segment->simpleInfo(), table_name);
     auto new_segment = segmentMerge(*dm_context, segments_to_merge, SegmentMergeReason::BackgroundGCThread);
     if (new_segment)
     {
-        checkSegmentUpdate(dm_context, segment, ThreadType::BG_GC);
+        checkSegmentUpdate(dm_context, new_segment, ThreadType::BG_GC, InputType::NotRaft);
     }
 
     return new_segment;
 }
 
-SegmentPtr DeltaMergeStore::gcTrySegmentMergeDelta(const DMContextPtr & dm_context, const SegmentPtr & segment, const SegmentPtr & prev_segment, const SegmentPtr & next_segment, DB::Timestamp gc_safe_point)
+SegmentPtr DeltaMergeStore::gcTrySegmentMergeDelta(
+    const DMContextPtr & dm_context,
+    const SegmentPtr & segment,
+    const SegmentPtr & prev_segment,
+    const SegmentPtr & next_segment,
+    DB::Timestamp gc_safe_point)
 {
     SegmentSnapshotPtr segment_snap;
     {
@@ -561,11 +736,16 @@ SegmentPtr DeltaMergeStore::gcTrySegmentMergeDelta(const DMContextPtr & dm_conte
         // The segment we just retrieved may be dropped from the map. Let's verify it again before creating a snapshot.
         if (!isSegmentValid(lock, segment))
         {
-            LOG_TRACE(log, "GC - Skip checking MergeDelta because not valid, segment={} table={}", segment->simpleInfo(), table_name);
+            LOG_TRACE(
+                log,
+                "GC - Skip checking MergeDelta because not valid, segment={} table={}",
+                segment->simpleInfo(),
+                table_name);
             return {};
         }
 
-        segment_snap = segment->createSnapshot(*dm_context, /* for_update */ true, CurrentMetrics::DT_SnapshotOfDeltaMerge);
+        segment_snap
+            = segment->createSnapshot(*dm_context, /* for_update */ true, CurrentMetrics::DT_SnapshotOfDeltaMerge);
         if (!segment_snap)
         {
             LOG_TRACE(
@@ -641,11 +821,7 @@ SegmentPtr DeltaMergeStore::gcTrySegmentMergeDelta(const DMContextPtr & dm_conte
 
     if (!should_compact)
     {
-        LOG_TRACE(
-            log,
-            "GC - MergeDelta skipped, segment={} table={}",
-            segment->simpleInfo(),
-            table_name);
+        LOG_TRACE(log, "GC - MergeDelta skipped, segment={} table={}", segment->simpleInfo(), table_name);
         return {};
     }
 
@@ -669,7 +845,7 @@ SegmentPtr DeltaMergeStore::gcTrySegmentMergeDelta(const DMContextPtr & dm_conte
     }
 
     segment_snap = {};
-    checkSegmentUpdate(dm_context, segment, ThreadType::BG_GC);
+    checkSegmentUpdate(dm_context, new_segment, ThreadType::BG_GC, InputType::NotRaft);
 
     return new_segment;
 }
@@ -685,22 +861,21 @@ UInt64 DeltaMergeStore::onSyncGc(Int64 limit, const GCOptions & gc_options)
     {
         std::shared_lock lock(read_write_mutex);
         // avoid gc on empty tables
-        if (segments.size() == 1)
+        if (segments.empty() || (segments.size() == 1 && segments.begin()->second->getEstimatedRows() == 0))
         {
-            const auto & seg = segments.begin()->second;
-            if (seg->getEstimatedRows() == 0)
-                return 0;
+            return 0;
         }
     }
 
     DB::Timestamp gc_safe_point = latest_gc_safe_point.load(std::memory_order_acquire);
-    LOG_TRACE(log,
-              "GC on table start, table={} check_key={} options={} gc_safe_point={} max_gc_limit={}",
-              table_name,
-              next_gc_check_key.toDebugString(),
-              gc_options.toString(),
-              gc_safe_point,
-              limit);
+    LOG_TRACE(
+        log,
+        "GC on table start, table={} check_key={} options={} gc_safe_point={} max_gc_limit={}",
+        table_name,
+        next_gc_check_key.toDebugString(),
+        gc_options.toString(),
+        gc_safe_point,
+        limit);
 
     UInt64 check_segments_num = 0;
     Int64 gc_segments_num = 0;
@@ -755,11 +930,7 @@ UInt64 DeltaMergeStore::onSyncGc(Int64 limit, const GCOptions & gc_options)
 
             if (!new_seg)
             {
-                LOG_TRACE(
-                    log,
-                    "GC - Skipped segment, segment={} table={}",
-                    segment->simpleInfo(),
-                    table_name);
+                LOG_TRACE(log, "GC - Skipped segment, segment={} table={}", segment->simpleInfo(), table_name);
                 continue;
             }
 
@@ -777,6 +948,5 @@ UInt64 DeltaMergeStore::onSyncGc(Int64 limit, const GCOptions & gc_options)
 
     return gc_segments_num;
 }
-
 } // namespace DM
 } // namespace DB

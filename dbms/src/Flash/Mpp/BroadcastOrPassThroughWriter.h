@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,35 +15,45 @@
 #pragma once
 
 #include <Flash/Coprocessor/ChunkCodec.h>
-#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Coprocessor/DAGResponseWriter.h>
 #include <Flash/Mpp/TrackedMppDataPacket.h>
 #include <common/types.h>
 
 namespace DB
 {
-template <class StreamWriterPtr>
+class DAGContext;
+enum class CompressionMethod;
+enum MPPDataPacketVersion : int64_t;
+
+template <class ExchangeWriterPtr>
 class BroadcastOrPassThroughWriter : public DAGResponseWriter
 {
 public:
     BroadcastOrPassThroughWriter(
-        StreamWriterPtr writer_,
+        ExchangeWriterPtr writer_,
         Int64 batch_send_min_limit_,
-        bool should_send_exec_summary_at_last,
-        DAGContext & dag_context_);
+        DAGContext & dag_context_,
+        MPPDataPacketVersion data_codec_version_,
+        tipb::CompressionMode compression_mode_,
+        tipb::ExchangeType exchange_type_);
     void write(const Block & block) override;
-    void finishWrite() override;
+    bool isWritable() const override;
+    void flush() override;
 
 private:
-    template <bool send_exec_summary_at_last>
-    void encodeThenWriteBlocks();
+    void writeBlocks();
 
+private:
     Int64 batch_send_min_limit;
-    bool should_send_exec_summary_at_last;
-    StreamWriterPtr writer;
+    ExchangeWriterPtr writer;
     std::vector<Block> blocks;
     size_t rows_in_blocks;
-    std::unique_ptr<ChunkCodecStream> chunk_codec_stream;
+    const tipb::ExchangeType exchange_type;
+
+    // support data compression
+    DataTypes expected_types;
+    MPPDataPacketVersion data_codec_version;
+    CompressionMethod compression_method{};
 };
 
 } // namespace DB

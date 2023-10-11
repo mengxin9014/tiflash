@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,14 @@
 
 #pragma once
 
+#include <Columns/ColumnString.h>
 #include <Common/config.h>
+#include <common/StringRef.h>
+#include <common/types.h>
 #include <re2/re2.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #if USE_RE2_ST
@@ -54,6 +58,26 @@ struct Match
 };
 } // namespace OptimizedRegularExpressionDetails
 
+struct Instruction
+{
+    explicit Instruction(int substitution_num_)
+        : substitution_num(substitution_num_)
+    {}
+    explicit Instruction(String literal_)
+        : literal(std::move(literal_))
+    {}
+
+    // If not negative, perform substitution of n-th subpattern from the regexp match.
+    Int32 substitution_num = -1;
+
+    // Otherwise, paste this literal string verbatim.
+    String literal;
+};
+
+/// Decomposes the replacement string into a sequence of substitutions and literals.
+/// E.g. "abc$1de$2fg$1$2" --> inst("abc"), inst(1), inst("de"), inst(2), inst("fg"), inst(1), inst(2)
+using Instructions = std::vector<Instruction>;
+
 template <bool thread_safe>
 class OptimizedRegularExpressionImpl
 {
@@ -74,10 +98,7 @@ public:
 
     explicit OptimizedRegularExpressionImpl(const std::string & regexp_, int options = 0);
 
-    bool match(const std::string & subject) const
-    {
-        return match(subject.data(), subject.size());
-    }
+    bool match(const std::string & subject) const { return match(subject.data(), subject.size()); }
 
     bool match(const std::string & subject, Match & match_) const
     {
@@ -91,34 +112,92 @@ public:
 
     unsigned match(const char * subject, size_t subject_size, MatchVec & matches) const
     {
-        return match(subject, subject_size, matches, number_of_subpatterns + 1);
+        return match(subject, subject_size, matches, capture_num + 1);
     }
 
     bool match(const char * subject, size_t subject_size) const;
     bool match(const char * subject, size_t subject_size, Match & match) const;
     unsigned match(const char * subject, size_t subject_size, MatchVec & matches, unsigned limit) const;
 
-    unsigned getNumberOfSubpatterns() const { return number_of_subpatterns; }
+    unsigned getNumberOfCaptureGroup() const { return capture_num; }
+    Instructions getInstructions(const StringRef & repl);
 
     /// Get the regexp re2 or nullptr if the pattern is trivial (for output to the log).
     const std::unique_ptr<RegexType> & getRE2() const { return re2; }
 
-    static void analyze(const std::string & regexp_, std::string & required_substring, bool & is_trivial, bool & required_substring_is_prefix);
+    static void analyze(
+        const std::string & regexp_,
+        std::string & required_substring,
+        bool & is_trivial,
+        bool & required_substring_is_prefix);
 
-    void getAnalyzeResult(std::string & out_required_substring, bool & out_is_trivial, bool & out_required_substring_is_prefix) const
+    void getAnalyzeResult(
+        std::string & out_required_substring,
+        bool & out_is_trivial,
+        bool & out_required_substring_is_prefix) const
     {
         out_required_substring = required_substring;
         out_is_trivial = is_trivial;
         out_required_substring_is_prefix = required_substring_is_prefix;
     }
 
+    Int64 instr(const char * subject, size_t subject_size, Int64 pos, Int64 occur, Int64 ret_op);
+    std::optional<StringRef> substr(const char * subject, size_t subject_size, Int64 pos, Int64 occur);
+    void replace(
+        const char * subject,
+        size_t subject_size,
+        DB::ColumnString::Chars_t & res_data,
+        DB::ColumnString::Offset & res_offset,
+        const Instructions & instructions,
+        Int64 pos,
+        Int64 occur);
+
 private:
+    Int64 processInstrEmptyStringExpr(const char * expr, size_t expr_size, size_t byte_pos, Int64 occur);
+    Int64 instrImpl(const char * subject, size_t subject_size, Int64 byte_pos, Int64 occur, Int64 ret_op);
+
+    std::optional<StringRef> processSubstrEmptyStringExpr(
+        const char * expr,
+        size_t expr_size,
+        size_t byte_pos,
+        Int64 occur);
+    std::optional<StringRef> substrImpl(const char * subject, size_t subject_size, Int64 byte_pos, Int64 occur);
+
+    void replaceImpl(
+        const char * subject,
+        size_t subject_size,
+        DB::ColumnString::Chars_t & res_data,
+        DB::ColumnString::Offset & res_offset,
+        Int64 byte_pos,
+        Int64 occur,
+        const Instructions & instructions);
+    void replaceOneImpl(
+        const char * subject,
+        size_t subject_size,
+        DB::ColumnString::Chars_t & res_data,
+        DB::ColumnString::Offset & res_offset,
+        Int64 byte_pos,
+        Int64 occur,
+        const Instructions & instructions);
+    void replaceAllImpl(
+        const char * subject,
+        size_t subject_size,
+        DB::ColumnString::Chars_t & res_data,
+        DB::ColumnString::Offset & res_offset,
+        Int64 byte_pos,
+        const Instructions & instructions);
+    void replaceMatchedStringWithInstructions(
+        DB::ColumnString::Chars_t & res_data,
+        DB::ColumnString::Offset & res_offset,
+        StringPieceType * matches,
+        const Instructions & instructions);
+
     bool is_trivial;
     bool required_substring_is_prefix;
     bool is_case_insensitive;
     std::string required_substring;
     std::unique_ptr<RegexType> re2;
-    unsigned number_of_subpatterns;
+    unsigned capture_num;
 };
 
 using OptimizedRegularExpression = OptimizedRegularExpressionImpl<true>;

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,16 +14,27 @@
 
 #pragma once
 
-#include <Storages/Transaction/TiKVHandle.h>
-#include <Storages/Transaction/TiKVKeyValue.h>
+#include <Storages/KVStore/Decode/DecodedTiKVKeyValue.h>
+#include <Storages/KVStore/Decode/TiKVHandle.h>
 
 namespace DB
 {
 using DecodedTiKVKeyPtr = std::shared_ptr<DecodedTiKVKey>;
+namespace DM
+{
+class ScanContext;
+using ScanContextPtr = std::shared_ptr<ScanContext>;
+} // namespace DM
 
 struct RegionQueryInfo
 {
-    RegionQueryInfo(RegionID region_id_, UInt64 version_, UInt64 conf_version_, Int64 physical_table_id_, const std::pair<DecodedTiKVKeyPtr, DecodedTiKVKeyPtr> & range_in_table_ = {}, const std::vector<std::pair<DecodedTiKVKeyPtr, DecodedTiKVKeyPtr>> & required_handle_ranges_ = {})
+    RegionQueryInfo(
+        RegionID region_id_,
+        UInt64 version_,
+        UInt64 conf_version_,
+        Int64 physical_table_id_,
+        const std::pair<DecodedTiKVKeyPtr, DecodedTiKVKeyPtr> & range_in_table_ = {},
+        const std::vector<std::pair<DecodedTiKVKeyPtr, DecodedTiKVKeyPtr>> & required_handle_ranges_ = {})
         : region_id(region_id_)
         , version(version_)
         , conf_version(conf_version_)
@@ -55,16 +66,16 @@ struct MvccQueryInfo
 
     const bool resolve_locks;
 
-    Float32 concurrent = 1.0;
-
     using RegionsQueryInfo = std::vector<RegionQueryInfo>;
     RegionsQueryInfo regions_query_info;
 
     using ReadIndexRes = std::unordered_map<RegionID, UInt64>;
     ReadIndexRes read_index_res;
 
+    DM::ScanContextPtr scan_context;
+
 public:
-    explicit MvccQueryInfo(bool resolve_locks_ = false, UInt64 read_tso_ = 0);
+    explicit MvccQueryInfo(bool resolve_locks_ = false, UInt64 read_tso_ = 0, DM::ScanContextPtr scan_ctx = nullptr);
 };
 
 } // namespace DB

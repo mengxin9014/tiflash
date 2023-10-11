@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +18,44 @@
 
 #include <string_view>
 
-namespace DB::PS::V3::ser
+namespace DB::PS::V3
 {
-String serializeTo(const PageEntriesEdit & edit);
-PageEntriesEdit deserializeFrom(std::string_view record);
+enum WALSerializeVersion : UInt32
+{
+    Plain = 1,
+    LZ4 = 2,
+};
 
-} // namespace DB::PS::V3::ser
+struct Comparator
+{
+    using is_transparent = void;
+
+    bool operator()(const std::shared_ptr<const String> & p1, const std::shared_ptr<const String> & p2) const
+    {
+        return *p1 < *p2;
+    }
+
+    bool operator()(const std::shared_ptr<const String> & p, const String & value) const { return *p < value; }
+
+    bool operator()(const String & value, const std::shared_ptr<const String> & p) const { return value < *p; }
+};
+
+using DataFileIdSet = std::set<std::shared_ptr<const String>, Comparator>;
+
+template <typename PageEntriesEdit>
+struct Serializer
+{
+    static String serializeTo(const PageEntriesEdit & edit);
+    static String serializeInCompressedFormTo(const PageEntriesEdit & edit);
+    static PageEntriesEdit deserializeFrom(std::string_view record, DataFileIdSet * data_file_id_set);
+};
+
+namespace u128
+{
+using Serializer = Serializer<PageEntriesEdit>;
+} // namespace u128
+namespace universal
+{
+using Serializer = Serializer<PageEntriesEdit>;
+} // namespace universal
+} // namespace DB::PS::V3

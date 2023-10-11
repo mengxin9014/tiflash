@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Planner/PlanQuerySource.h>
 #include <Flash/Planner/Planner.h>
+#include <Interpreters/Context.h>
 #include <Parsers/makeDummyQuery.h>
 
 namespace DB
@@ -38,6 +40,16 @@ String PlanQuerySource::str(size_t)
 std::unique_ptr<IInterpreter> PlanQuerySource::interpreter(Context &, QueryProcessingStage::Enum)
 {
     return std::make_unique<Planner>(context, *this);
+}
+
+const tipb::DAGRequest & PlanQuerySource::getDAGRequest() const
+{
+    return *getDAGContext().dag_request;
+}
+
+DAGContext & PlanQuerySource::getDAGContext() const
+{
+    return *context.getDAGContext();
 }
 
 } // namespace DB

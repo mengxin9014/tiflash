@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,12 @@
 
 #include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
+#include <Common/Stopwatch.h>
+#include <Common/TiFlashMetrics.h>
 #include <IO/WriteBufferFromFileDescriptor.h>
 #include <IO/WriteHelpers.h>
 #include <errno.h>
 #include <port/unistd.h>
-
 
 namespace ProfileEvents
 {
@@ -120,6 +121,8 @@ void WriteBufferFromFileDescriptor::sync()
 
     /// Request OS to sync data with storage medium.
     ProfileEvents::increment(ProfileEvents::FileFSync);
+    Stopwatch sw;
+    SCOPE_EXIT({ GET_METRIC(tiflash_system_seconds, type_fsync).Observe(sw.elapsedSeconds()); });
     int res = fsync(fd);
     if (-1 == res)
         throwFromErrno("Cannot fsync " + getFileName(), ErrorCodes::CANNOT_FSYNC);

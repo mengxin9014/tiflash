@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,16 @@ void dbgFuncEnableSchemaSyncService(Context & context, const ASTs & args, DBGInv
 // Usage:
 //   ./storage-client.sh "DBGInvoke refresh_schemas()"
 void dbgFuncRefreshSchemas(Context & context, const ASTs & args, DBGInvoker::Printer output);
+
+// Refresh the schema for a table.
+// Usage:
+//  ./storage-client.sh "DBGInvoke refresh_table_schema(db_name, table_name)"
+void dbgFuncRefreshTableSchema(Context & context, const ASTs & args, DBGInvoker::Printer output);
+
+// Refresh the schema for a table.
+// Usage:
+//  ./storage-client.sh "DBGInvoke refresh_mapped_table_schema(db_name, table_name)" // the db_name and table_name is just for tiflash
+void dbgFuncRefreshMappedTableSchema(Context & context, const ASTs & args, DBGInvoker::Printer output);
 
 // Trigger gc on all databases / tables.
 // Usage:

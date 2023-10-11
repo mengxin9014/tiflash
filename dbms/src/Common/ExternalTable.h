@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 #pragma once
 
 #include <Client/Connection.h>
-#include <Common/HTMLForm.h>
 #include <DataStreams/AsynchronousBlockInputStream.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <IO/ReadBufferFromFile.h>
@@ -64,12 +63,10 @@ public:
     {
         initReadBuffer();
         initSampleBlock();
-        ExternalTableData res = std::make_pair(std::make_shared<AsynchronousBlockInputStream>(context.getInputFormat(
-                                                   format,
-                                                   *read_buffer,
-                                                   sample_block,
-                                                   DEFAULT_BLOCK_SIZE)),
-                                               name);
+        ExternalTableData res = std::make_pair(
+            std::make_shared<AsynchronousBlockInputStream>(
+                context.getInputFormat(format, *read_buffer, sample_block, DEFAULT_BLOCK_SIZE)),
+            name);
         return res;
     }
 
@@ -177,14 +174,17 @@ public:
         else if (external_options.count("types"))
             parseStructureFromTypesField(external_options["types"].as<std::string>());
         else
-            throw Exception("Neither --structure nor --types have not been provided for external table", ErrorCodes::BAD_ARGUMENTS);
+            throw Exception(
+                "Neither --structure nor --types have not been provided for external table",
+                ErrorCodes::BAD_ARGUMENTS);
     }
 };
 
 /// Parsing of external table used when sending tables via http
 /// The `handlePart` function will be called for each table passed,
 /// so it's also necessary to call `clean` at the end of the `handlePart`.
-class ExternalTablesHandler : public Poco::Net::PartHandler
+class ExternalTablesHandler
+    : public Poco::Net::PartHandler
     , BaseExternalTable
 {
 public:
@@ -195,7 +195,7 @@ public:
         , params(params_)
     {}
 
-    void handlePart(const Poco::Net::MessageHeader & header, std::istream & stream)
+    void handlePart(const Poco::Net::MessageHeader & header, std::istream & stream) override
     {
         /// The buffer is initialized here, not in the virtual function initReadBuffer
         read_buffer = std::make_unique<ReadBufferFromIStream>(stream);
@@ -214,7 +214,10 @@ public:
         else if (params.has(name + "_types"))
             parseStructureFromTypesField(params.get(name + "_types"));
         else
-            throw Exception("Neither structure nor types have not been provided for external table " + name + ". Use fields " + name + "_structure or " + name + "_types to do so.", ErrorCodes::BAD_ARGUMENTS);
+            throw Exception(
+                "Neither structure nor types have not been provided for external table " + name + ". Use fields " + name
+                    + "_structure or " + name + "_types to do so.",
+                ErrorCodes::BAD_ARGUMENTS);
 
         ExternalTableData data = getData(context);
 

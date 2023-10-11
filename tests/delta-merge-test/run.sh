@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,11 +22,7 @@ set -xe
 
 check_env
 
-# We need to separate mock-test for dt and tmt, since this behavior
-# is different in some tests
-# * "tmt" engine ONLY support disable_bg_flush = false.
-# * "dt"  engine ONLY support disable_bg_flush = true.
-# (only tics0 up) (for engine DetlaTree)
+# (only tics0 up)
 docker-compose -f mock-test-dt.yaml down
 clean_data_log
 

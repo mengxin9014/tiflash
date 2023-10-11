@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ endif ()
 target_include_directories (daemon PUBLIC include)
 target_include_directories (daemon PRIVATE ${TiFlash_SOURCE_DIR}/libs/libpocoext/include)
 
-target_link_libraries (daemon clickhouse_common_io clickhouse_common_config ${EXECINFO_LIBRARY})
+target_link_libraries (daemon tiflash_common_io tiflash_common_config grpc grpc++ ${EXECINFO_LIBRARY})
 if (ENABLE_TESTS)
     add_subdirectory (src/tests EXCLUDE_FROM_ALL)
 endif ()

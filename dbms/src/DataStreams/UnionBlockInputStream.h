@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -90,15 +90,21 @@ public:
 private:
     using Self = UnionBlockInputStream<mode, ignore_block>;
     static constexpr auto NAME = "Union";
+    using Payload = UnionBlockInputStreamImpl::OutputData<mode>;
 
 public:
     UnionBlockInputStream(
         BlockInputStreams inputs,
         BlockInputStreams additional_inputs_at_end,
         size_t max_threads,
+        Int64 max_buffered_bytes,
         const String & req_id,
         ExceptionCallback exception_callback_ = ExceptionCallback())
-        : output_queue(std::min(std::max(inputs.size(), additional_inputs_at_end.size()), max_threads) * 5) // reduce contention
+        : output_queue(
+            CapacityLimits(
+                std::min(std::max(inputs.size(), additional_inputs_at_end.size()), max_threads) * 5,
+                max_buffered_bytes),
+            [](const Payload & element) { return element.block.allocatedBytes(); }) // reduce contention
         , log(Logger::get(req_id))
         , handler(*this)
         , processor(inputs, additional_inputs_at_end, max_threads, handler, log)
@@ -149,17 +155,11 @@ public:
         processor.cancel(kill);
     }
 
-    BlockExtraInfo getBlockExtraInfo() const override
-    {
-        return doGetBlockExtraInfo();
-    }
+    BlockExtraInfo getBlockExtraInfo() const override { return doGetBlockExtraInfo(); }
 
     Block getHeader() const override { return children.at(0)->getHeader(); }
 
-    virtual void collectNewThreadCountOfThisLevel(int & cnt) override
-    {
-        cnt += processor.getMaxThreads();
-    }
+    virtual void collectNewThreadCountOfThisLevel(int & cnt) override { cnt += processor.getMaxThreads(); }
 
 protected:
     void finalize()
@@ -203,9 +203,7 @@ protected:
     }
 
     /// Do nothing, to make the preparation for the query execution in parallel, in ParallelInputsProcessor.
-    void readPrefix() override
-    {
-    }
+    void readPrefix() override {}
 
     /** The following options are possible:
       * 1. `readImpl` function is called until it returns an empty block.
@@ -255,6 +253,20 @@ protected:
             children[i]->readSuffix();
     }
 
+    uint64_t collectCPUTimeNsImpl(bool /*is_thread_runner*/) override
+    {
+        // `UnionBlockInputStream` does not count its own execute time,
+        // whether `UnionBlockInputStream` is `thread-runner` or not,
+        // because `UnionBlockInputStream` basically does not use cpu, only `condition_cv.wait`.
+        uint64_t cpu_time_ns = 0;
+        forEachChild([&](IBlockInputStream & child) {
+            // Each of `UnionBlockInputStream`'s children is a thread-runner.
+            cpu_time_ns += child.collectCPUTimeNs(true);
+            return false;
+        });
+        return cpu_time_ns;
+    }
+
 private:
     BlockExtraInfo doGetBlockExtraInfo() const
     {
@@ -267,7 +279,6 @@ private:
     }
 
 private:
-    using Payload = UnionBlockInputStreamImpl::OutputData<mode>;
     using OutputQueue = MPMCQueue<Payload>;
 
 private:
@@ -314,24 +325,13 @@ private:
                 parent.output_queue.emplace(block, extra_info);
         }
 
-        void onFinish()
-        {
-            parent.output_queue.emplace();
-        }
+        void onFinish() { parent.output_queue.emplace(); }
 
-        void onFinishThread(size_t /*thread_num*/)
-        {
-        }
+        void onFinishThread(size_t /*thread_num*/) {}
 
-        void onException(std::exception_ptr & exception, size_t /*thread_num*/)
-        {
-            parent.handleException(exception);
-        }
+        void onException(std::exception_ptr & exception, size_t /*thread_num*/) { parent.handleException(exception); }
 
-        String getName() const
-        {
-            return "ParallelUnion";
-        }
+        String getName() const { return "ParallelUnion"; }
 
         Self & parent;
     };

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,51 +14,36 @@
 
 #pragma once
 
-#include <Flash/Coprocessor/DAGContext.h>
+#include <Core/Block.h>
 #include <common/types.h>
 #include <tipb/select.pb.h>
 
 namespace DB
 {
-/// do not need be thread safe since it is only used in single thread env
-struct ExecutionSummary
-{
-    UInt64 time_processed_ns;
-    UInt64 num_produced_rows;
-    UInt64 num_iterations;
-    UInt64 concurrency;
-    ExecutionSummary()
-        : time_processed_ns(0)
-        , num_produced_rows(0)
-        , num_iterations(0)
-        , concurrency(0)
-    {}
-
-    void merge(const ExecutionSummary & other, bool streaming_call);
-};
+class DAGContext;
 
 class DAGResponseWriter
 {
 public:
-    DAGResponseWriter(
-        Int64 records_per_chunk_,
-        DAGContext & dag_context_);
-    void fillTiExecutionSummary(
-        tipb::ExecutorExecutionSummary * execution_summary,
-        ExecutionSummary & current,
-        const String & executor_id,
-        bool delta_mode);
-    void addExecuteSummaries(tipb::SelectResponse & response, bool delta_mode);
+    DAGResponseWriter(Int64 records_per_chunk_, DAGContext & dag_context_);
+    /// prepared with sample block
+    virtual void prepare(const Block &){};
     virtual void write(const Block & block) = 0;
-    virtual void finishWrite() = 0;
+
+    // For async writer, `isWritable` need to be called before calling `write`.
+    // ```
+    // while (!isWritable()) {}
+    // write(block);
+    // ```
+    virtual bool isWritable() const { throw Exception("Unsupport"); }
+
+    /// flush cached blocks for batch writer
+    virtual void flush() = 0;
     virtual ~DAGResponseWriter() = default;
-    const DAGContext & dagContext() const { return dag_context; }
 
 protected:
     Int64 records_per_chunk;
     DAGContext & dag_context;
-    std::unordered_map<String, ExecutionSummary> previous_execution_stats;
-    std::unordered_set<String> local_executors;
 };
 
 } // namespace DB

@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,16 +14,5 @@
 
 add_subdirectory (System)
 add_subdirectory (Page)
-add_subdirectory (DeltaMerge/File/dtpb)
-add_subdirectory (DeltaMerge/workload)
-add_subdirectory (Page/workload)
-
-if (ENABLE_TESTS)
-    add_subdirectory (tests EXCLUDE_FROM_ALL)
-    add_subdirectory (Transaction/tests EXCLUDE_FROM_ALL)
-    add_subdirectory (Page/V2/tests EXCLUDE_FROM_ALL)
-    add_subdirectory (Page/V3 EXCLUDE_FROM_ALL)
-    add_subdirectory (Page/V3/tests EXCLUDE_FROM_ALL)
-    add_subdirectory (DeltaMerge/tests EXCLUDE_FROM_ALL)
-endif ()
-
+add_subdirectory (DeltaMerge)
+add_subdirectory (KVStore)

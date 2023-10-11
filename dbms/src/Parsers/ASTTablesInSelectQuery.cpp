@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,16 +20,15 @@
 namespace DB
 {
 
-#define CLONE(member) \
-do \
-{ \
-    if (member) \
-    { \
-        res->member = member->clone(); \
-        res->children.push_back(res->member); \
-    } \
-} \
-while (0)
+#define CLONE(member)                             \
+    do                                            \
+    {                                             \
+        if (member)                               \
+        {                                         \
+            res->member = (member)->clone();      \
+            res->children.push_back(res->member); \
+        }                                         \
+    } while (0)
 
 
 ASTPtr ASTTableExpression::clone() const
@@ -57,16 +56,6 @@ ASTPtr ASTTableJoin::clone() const
     return res;
 }
 
-ASTPtr ASTArrayJoin::clone() const
-{
-    auto res = std::make_shared<ASTArrayJoin>(*this);
-    res->children.clear();
-
-    CLONE(expression_list);
-
-    return res;
-}
-
 ASTPtr ASTTablesInSelectQueryElement::clone() const
 {
     auto res = std::make_shared<ASTTablesInSelectQueryElement>(*this);
@@ -74,7 +63,6 @@ ASTPtr ASTTablesInSelectQueryElement::clone() const
 
     CLONE(table_join);
     CLONE(table_expression);
-    CLONE(array_join);
 
     return res;
 }
@@ -93,7 +81,8 @@ ASTPtr ASTTablesInSelectQuery::clone() const
 #undef CLONE
 
 
-void ASTTableExpression::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTTableExpression::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame)
+    const
 {
     std::string indent_str = settings.one_line ? "" : std::string(4 * frame.indent, ' ');
 
@@ -112,20 +101,20 @@ void ASTTableExpression::formatImpl(const FormatSettings & settings, FormatState
 
     if (final)
     {
-        settings.ostr << (settings.hilite ? hilite_keyword : "") << settings.nl_or_ws << indent_str
-            << "FINAL" << (settings.hilite ? hilite_none : "");
+        settings.ostr << (settings.hilite ? hilite_keyword : "") << settings.nl_or_ws << indent_str << "FINAL"
+                      << (settings.hilite ? hilite_none : "");
     }
 
     if (sample_size)
     {
-        settings.ostr << (settings.hilite ? hilite_keyword : "") << settings.nl_or_ws << indent_str
-            << "SAMPLE " << (settings.hilite ? hilite_none : "");
+        settings.ostr << (settings.hilite ? hilite_keyword : "") << settings.nl_or_ws << indent_str << "SAMPLE "
+                      << (settings.hilite ? hilite_none : "");
         sample_size->formatImpl(settings, state, frame);
 
         if (sample_offset)
         {
-            settings.ostr << (settings.hilite ? hilite_keyword : "") << ' '
-                << "OFFSET " << (settings.hilite ? hilite_none : "");
+            settings.ostr << (settings.hilite ? hilite_keyword : "") << ' ' << "OFFSET "
+                          << (settings.hilite ? hilite_none : "");
             sample_offset->formatImpl(settings, state, frame);
         }
     }
@@ -138,62 +127,63 @@ void ASTTableJoin::formatImplBeforeTable(const FormatSettings & settings, Format
 
     switch (locality)
     {
-        case Locality::Unspecified:
-            break;
-        case Locality::Local:
-            break;
-        case Locality::Global:
-            settings.ostr << "GLOBAL ";
-            break;
+    case Locality::Unspecified:
+        break;
+    case Locality::Local:
+        break;
+    case Locality::Global:
+        settings.ostr << "GLOBAL ";
+        break;
     }
 
     if (kind != Kind::Cross && kind != Kind::Comma)
     {
         switch (strictness)
         {
-            case Strictness::Unspecified:
-                break;
-            case Strictness::Any:
-                settings.ostr << "ANY ";
-                break;
-            case Strictness::All:
-                settings.ostr << "ALL ";
-                break;
+        case Strictness::Unspecified:
+            break;
+        case Strictness::Any:
+            settings.ostr << "ANY ";
+            break;
+        case Strictness::All:
+            settings.ostr << "ALL ";
+            break;
         }
     }
 
     switch (kind)
     {
-        case Kind::Inner:
-            settings.ostr << "INNER JOIN";
-            break;
-        case Kind::Left:
-            settings.ostr << "LEFT JOIN";
-            break;
-        case Kind::Right:
-            settings.ostr << "RIGHT JOIN";
-            break;
-        case Kind::Full:
-            settings.ostr << "FULL OUTER JOIN";
-            break;
-        case Kind::Cross:
-            settings.ostr << "CROSS JOIN";
-            break;
-        case Kind::Comma:
-            settings.ostr << ",";
-            break;
-        case Kind::Anti:
-            settings.ostr << "ANTI JOIN";
-            break;
-        default:
-            throw Exception("Join kind not supported");
+    case Kind::Inner:
+        settings.ostr << "INNER JOIN";
+        break;
+    case Kind::LeftOuter:
+        settings.ostr << "LEFT JOIN";
+        break;
+    case Kind::RightOuter:
+        settings.ostr << "RIGHT JOIN";
+        break;
+    case Kind::Full:
+        settings.ostr << "FULL OUTER JOIN";
+        break;
+    case Kind::Cross:
+        settings.ostr << "CROSS JOIN";
+        break;
+    case Kind::Comma:
+        settings.ostr << ",";
+        break;
+    case Kind::Anti:
+        settings.ostr << "ANTI JOIN";
+        break;
+    default:
+        throw Exception("Join kind not supported");
     }
 
     settings.ostr << (settings.hilite ? hilite_none : "");
 }
 
 
-void ASTTableJoin::formatImplAfterTable(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTTableJoin::formatImplAfterTable(const FormatSettings & settings, FormatState & state, FormatStateStacked frame)
+    const
 {
     frame.need_parens = false;
 
@@ -220,18 +210,10 @@ void ASTTableJoin::formatImpl(const FormatSettings & settings, FormatState & sta
 }
 
 
-void ASTArrayJoin::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
-{
-    settings.ostr << (settings.hilite ? hilite_keyword : "")
-        << (kind == Kind::Left ? "LEFT " : "") << "ARRAY JOIN " << (settings.hilite ? hilite_none : "");
-
-    settings.one_line
-        ? expression_list->formatImpl(settings, state, frame)
-        : typeid_cast<const ASTExpressionList &>(*expression_list).formatImplMultiline(settings, state, frame);
-}
-
-
-void ASTTablesInSelectQueryElement::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTTablesInSelectQueryElement::formatImpl(
+    const FormatSettings & settings,
+    FormatState & state,
+    FormatStateStacked frame) const
 {
     if (table_expression)
     {
@@ -247,18 +229,15 @@ void ASTTablesInSelectQueryElement::formatImpl(const FormatSettings & settings, 
         if (table_join)
             static_cast<const ASTTableJoin &>(*table_join).formatImplAfterTable(settings, state, frame);
     }
-    else if (array_join)
-    {
-        array_join->formatImpl(settings, state, frame);
-    }
 }
 
 
-void ASTTablesInSelectQuery::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTTablesInSelectQuery::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame)
+    const
 {
     std::string indent_str = settings.one_line ? "" : std::string(4 * frame.indent, ' ');
 
-    for (ASTs::const_iterator it = children.begin(); it != children.end(); ++it)
+    for (auto it = children.begin(); it != children.end(); ++it)
     {
         if (it != children.begin())
             settings.ostr << settings.nl_or_ws << indent_str;
@@ -267,4 +246,4 @@ void ASTTablesInSelectQuery::formatImpl(const FormatSettings & settings, FormatS
     }
 }
 
-}
+} // namespace DB

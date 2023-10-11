@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2022 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -65,7 +65,7 @@ add_custom_command(OUTPUT ${_TIFLASH_PROXY_LIBRARY}
     WORKING_DIRECTORY ${_TIFLASH_PROXY_SOURCE_DIR}
     DEPENDS "${_TIFLASH_PROXY_SRCS}"
             "${_TIFLASH_PROXY_SOURCE_DIR}/Cargo.lock"
-            "${_TIFLASH_PROXY_SOURCE_DIR}/rust-toolchain")
+            "${TiFlash_SOURCE_DIR}/rust-toolchain")
 
 add_custom_target(tiflash_proxy ALL DEPENDS ${_TIFLASH_PROXY_LIBRARY})
 add_library(libtiflash_proxy SHARED IMPORTED GLOBAL)

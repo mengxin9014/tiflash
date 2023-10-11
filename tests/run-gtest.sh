@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,9 +63,19 @@ set -e
 
 cd "${build_dir}"
 
+# ThreadSanitizerFlags
+# Reference: https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags
+if [ -z $TSAN_OPTIONS ]; then
+	# Ignore false positive error, related issue
+	# https://github.com/pingcap/tiflash/issues/6766
+	export TSAN_OPTIONS="report_atomic_races=0"
+else
+	export TSAN_OPTIONS="report_atomic_races=0 ${TSAN_OPTIONS}"
+fi
+
 # Set env variable to run test cases with test data
 export ALSO_RUN_WITH_TEST_DATA=1
-
+export LD_LIBRARY_PATH=.
 if [[ ${RUN_TESTS_PARALLEL} != "true" ]]; then
 	tests=(
 		"gtests_dbms"

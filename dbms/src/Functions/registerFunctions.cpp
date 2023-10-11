@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,12 +29,9 @@ void registerFunctionsConditional(FunctionFactory &);
 void registerFunctionsConversion(FunctionFactory &);
 void registerFunctionsTiDBConversion(FunctionFactory &);
 void registerFunctionsDateTime(FunctionFactory &);
-void registerFunctionsFormatting(FunctionFactory &);
 void registerFunctionsHashing(FunctionFactory &);
 void registerFunctionsLogical(FunctionFactory &);
 void registerFunctionsMiscellaneous(FunctionFactory &);
-void registerFunctionsRandom(FunctionFactory &);
-void registerFunctionsReinterpret(FunctionFactory &);
 void registerFunctionsRound(FunctionFactory &);
 void registerFunctionsString(FunctionFactory &);
 void registerFunctionsStringSearch(FunctionFactory &);
@@ -42,11 +39,17 @@ void registerFunctionsURL(FunctionFactory &);
 void registerFunctionsMath(FunctionFactory &);
 void registerFunctionsTransform(FunctionFactory &);
 void registerFunctionsGeo(FunctionFactory &);
-void registerFunctionsCharset(FunctionFactory &);
 void registerFunctionsNull(FunctionFactory &);
 void registerFunctionsStringMath(FunctionFactory &);
 void registerFunctionsDuration(FunctionFactory &);
-
+void registerFunctionsRegexp(FunctionFactory &);
+void registerFunctionsJson(FunctionFactory &);
+void registerFunctionsIsIPAddr(FunctionFactory &);
+void registerFunctionsRegexpLike(FunctionFactory &);
+void registerFunctionsRegexpInstr(FunctionFactory &);
+void registerFunctionsRegexpSubstr(FunctionFactory &);
+void registerFunctionsRegexpReplace(FunctionFactory &);
+void registerFunctionsGrouping(FunctionFactory &);
 
 void registerFunctions()
 {
@@ -60,12 +63,9 @@ void registerFunctions()
     registerFunctionsConversion(factory);
     registerFunctionsTiDBConversion(factory);
     registerFunctionsDateTime(factory);
-    registerFunctionsFormatting(factory);
     registerFunctionsHashing(factory);
     registerFunctionsLogical(factory);
     registerFunctionsMiscellaneous(factory);
-    registerFunctionsRandom(factory);
-    registerFunctionsReinterpret(factory);
     registerFunctionsRound(factory);
     registerFunctionsString(factory);
     registerFunctionsStringSearch(factory);
@@ -73,10 +73,16 @@ void registerFunctions()
     registerFunctionsMath(factory);
     registerFunctionsTransform(factory);
     registerFunctionsGeo(factory);
-    registerFunctionsCharset(factory);
     registerFunctionsNull(factory);
     registerFunctionsStringMath(factory);
     registerFunctionsDuration(factory);
+    registerFunctionsRegexpLike(factory);
+    registerFunctionsRegexpInstr(factory);
+    registerFunctionsRegexpSubstr(factory);
+    registerFunctionsRegexpReplace(factory);
+    registerFunctionsJson(factory);
+    registerFunctionsIsIPAddr(factory);
+    registerFunctionsGrouping(factory);
 }
 
 } // namespace DB

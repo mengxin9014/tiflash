@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 #pragma once
 
 #include <Core/Block.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Storages/DeltaMerge/File/DMFileWriter.h>
 
 namespace DB
@@ -32,26 +32,9 @@ namespace DM
 class DMFileBlockOutputStream
 {
 public:
-    using Flags = DMFileWriter::Flags;
+    DMFileBlockOutputStream(const Context & context, const DMFilePtr & dmfile, const ColumnDefines & write_columns);
 
-    DMFileBlockOutputStream(const Context & context,
-                            const DMFilePtr & dmfile,
-                            const ColumnDefines & write_columns,
-                            const Flags flags = Flags())
-        : writer(
-            dmfile,
-            write_columns,
-            context.getFileProvider(),
-            context.getWriteLimiter(),
-            DMFileWriter::Options{
-                CompressionSettings(context.getSettingsRef().dt_compression_method, context.getSettingsRef().dt_compression_level),
-                context.getSettingsRef().min_compress_block_size,
-                context.getSettingsRef().max_compress_block_size,
-                flags})
-    {
-    }
-
-    const DMFilePtr getFile() const { return writer.getFile(); }
+    DMFilePtr getFile() const { return writer.getFile(); }
 
     using BlockProperty = DMFileWriter::BlockProperty;
     void write(const Block & block, const BlockProperty & block_property) { writer.write(block, block_property); }

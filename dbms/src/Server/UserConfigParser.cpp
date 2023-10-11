@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ static std::string tryGetAbsolutePath(const std::string & config_path, std::stri
 ConfigReloaderPtr parseSettings(
     Poco::Util::LayeredConfiguration & config,
     const std::string & config_path,
-    std::unique_ptr<Context> & global_context,
+    const std::unique_ptr<Context> & global_context,
     const LoggerPtr & log)
 {
     std::string users_config_path = config.getString("users_config", String(1, '\0'));
@@ -67,13 +67,19 @@ ConfigReloaderPtr parseSettings(
     if (load_from_main_config_path)
         users_config_path = config_path;
 
+    if (users_config_path.empty())
+    {
+        global_context->setUsersConfig(new Poco::Util::LayeredConfiguration());
+        return nullptr;
+    }
+
     LOG_INFO(log, "Set users config file to: {}", users_config_path);
 
     return std::make_unique<ConfigReloader>(
         users_config_path, //
-        /*updater=*/[&global_context](ConfigurationPtr cfg) { global_context->setUsersConfig(cfg); },
-        /*already_loaded=*/false,
-        /*name=*/"UserCfgReloader");
+        /* updater = */ [&global_context](ConfigurationPtr cfg) { global_context->setUsersConfig(cfg); },
+        /* already_loaded = */ false,
+        /* name = */ "UserCfgReloader");
 }
 
 } // namespace UserConfig

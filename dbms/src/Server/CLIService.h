@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,12 @@
 // limitations under the License.
 
 #pragma once
+
 #include <Common/TiFlashBuildInfo.h>
 #include <Common/UnifiedLogFormatter.h>
 #include <Encryption/DataKeyManager.h>
 #include <Encryption/MockKeyManager.h>
+#include <Interpreters/Context.h>
 #include <Poco/ConsoleChannel.h>
 #include <Poco/File.h>
 #include <Poco/FormattingChannel.h>
@@ -24,7 +26,7 @@
 #include <Poco/PatternFormatter.h>
 #include <Server/IServer.h>
 #include <Server/RaftConfigParser.h>
-#include <Storages/Transaction/ProxyFFI.h>
+#include <Storages/KVStore/FFI/ProxyFFI.h>
 #include <daemon/BaseDaemon.h>
 #include <pingcap/Config.h>
 
@@ -85,7 +87,11 @@ struct CLIService : public BaseDaemon
     const Args & args;
     std::unique_ptr<DB::Context> global_context;
 
-    explicit CLIService(Func func_, const Args & args_, const std::string & config_file, RaftStoreFFIFunc ffi_function = nullptr);
+    explicit CLIService(
+        Func func_,
+        const Args & args_,
+        const std::string & config_file,
+        RaftStoreFFIFunc ffi_function = nullptr);
 
     int main(const std::vector<std::string> &) override;
 };
@@ -131,7 +137,8 @@ CLIService<Func, Args>::TiFlashProxyConfig::TiFlashProxyConfig(Poco::Util::Layer
     is_proxy_runnable = true;
 }
 template <typename Func, typename Args>
-CLIService<Func, Args>::RaftStoreProxyRunner::RaftStoreProxyRunner(CLIService::RaftStoreProxyRunner::RunRaftStoreProxyParms && parms_)
+CLIService<Func, Args>::RaftStoreProxyRunner::RaftStoreProxyRunner(
+    CLIService::RaftStoreProxyRunner::RunRaftStoreProxyParms && parms_)
     : parms(std::move(parms_))
 {}
 template <typename Func, typename Args>
@@ -165,7 +172,11 @@ void * CLIService<Func, Args>::RaftStoreProxyRunner::runRaftStoreProxyFfi(void *
 }
 
 template <typename Func, typename Args>
-CLIService<Func, Args>::CLIService(Func func_, const Args & args_, const std::string & config_file, RaftStoreFFIFunc ffi_function)
+CLIService<Func, Args>::CLIService(
+    Func func_,
+    const Args & args_,
+    const std::string & config_file,
+    RaftStoreFFIFunc ffi_function)
     : func(std::move(func_))
     , ffi_function(ffi_function)
     , args(args_)
@@ -183,8 +194,7 @@ int CLIService<Func, Args>::main(const std::vector<std::string> &)
     using namespace DB;
     TiFlashProxyConfig proxy_conf(config());
     EngineStoreServerWrap tiflash_instance_wrap{};
-    auto helper = GetEngineStoreServerHelper(
-        &tiflash_instance_wrap);
+    auto helper = GetEngineStoreServerHelper(&tiflash_instance_wrap);
 
     typename RaftStoreProxyRunner::RunRaftStoreProxyParms parms{&helper, proxy_conf, ffi_function};
     RaftStoreProxyRunner proxy_runner(std::move(parms));
@@ -208,9 +218,9 @@ int CLIService<Func, Args>::main(const std::vector<std::string> &)
         proxy_runner.join();
     });
 
-    global_context = std::make_unique<Context>(Context::createGlobal());
-    global_context->setGlobalContext(*global_context);
+    global_context = Context::createGlobal();
     global_context->setApplicationType(Context::ApplicationType::SERVER);
+    global_context->mockConfigLoaded();
 
     /// Init File Provider
     if (proxy_conf.is_proxy_runnable)

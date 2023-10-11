@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/config.h>
 #include <IO/CompressedReadBuffer.h>
-
 
 namespace DB
 {
@@ -26,6 +26,7 @@ bool CompressedReadBuffer<has_checksum>::nextImpl()
     if (!size_compressed)
         return false;
 
+    assert(size_decompressed > 0 && size_compressed_without_checksum > 0);
     memory.resize(size_decompressed);
     working_buffer = Buffer(&memory[0], &memory[size_decompressed]);
 
@@ -62,6 +63,7 @@ size_t CompressedReadBuffer<has_checksum>::readBig(char * to, size_t n)
         else
         {
             bytes += offset();
+            assert(size_decompressed > 0 && size_compressed_without_checksum > 0);
             memory.resize(size_decompressed);
             working_buffer = Buffer(&memory[0], &memory[size_decompressed]);
             pos = working_buffer.begin();

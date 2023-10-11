@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,25 +40,36 @@ void ExchangeReceiverStatistics::appendExtraJson(FmtBuffer & fmt_buffer) const
     fmt_buffer.append("]");
 }
 
+void ExchangeReceiverStatistics::updateExchangeReceiveDetail(
+    const std::vector<ConnectionProfileInfo> & connection_profile_infos)
+{
+    RUNTIME_CHECK(connection_profile_infos.size() == partition_num);
+    for (size_t i = 0; i < partition_num; ++i)
+    {
+        exchange_receive_details[i].packets += connection_profile_infos[i].packets;
+        exchange_receive_details[i].bytes += connection_profile_infos[i].bytes;
+    }
+}
+
 void ExchangeReceiverStatistics::collectExtraRuntimeDetail()
 {
-    const auto & io_stream_map = dag_context.getInBoundIOInputStreamsMap();
-    auto it = io_stream_map.find(executor_id);
-    if (it != io_stream_map.end())
+    switch (dag_context.getExecutionMode())
     {
-        for (const auto & io_stream : it->second)
-        {
-            auto * exchange_receiver_stream = dynamic_cast<ExchangeReceiverInputStream *>(io_stream.get());
+    case ExecutionMode::None:
+        break;
+    case ExecutionMode::Stream:
+        transformInBoundIOProfileForStream(dag_context, executor_id, [&](const IBlockInputStream & stream) {
             /// InBoundIOInputStream of ExchangeReceiver should be ExchangeReceiverInputStream
-            assert(exchange_receiver_stream);
-            const auto & connection_profile_infos = exchange_receiver_stream->getConnectionProfileInfos();
-            assert(connection_profile_infos.size() == partition_num);
-            for (size_t i = 0; i < partition_num; ++i)
-            {
-                exchange_receive_details[i].packets += connection_profile_infos[i].packets;
-                exchange_receive_details[i].bytes += connection_profile_infos[i].bytes;
-            }
-        }
+            if (const auto * exchange_receiver_stream = dynamic_cast<const ExchangeReceiverInputStream *>(&stream);
+                exchange_receiver_stream)
+                updateExchangeReceiveDetail(exchange_receiver_stream->getConnectionProfileInfos());
+        });
+        break;
+    case ExecutionMode::Pipeline:
+        transformInBoundIOProfileForPipeline(dag_context, executor_id, [&](const IOProfileInfo & profile_info) {
+            updateExchangeReceiveDetail(profile_info.connection_profile_infos);
+        });
+        break;
     }
 }
 
@@ -72,7 +83,7 @@ ExchangeReceiverStatistics::ExchangeReceiverStatistics(const tipb::Executor * ex
     for (size_t index = 0; index < partition_num; ++index)
     {
         auto sender_task = mpp::TaskMeta{};
-        if (!sender_task.ParseFromString(exchange_sender_receiver.encoded_task_meta(index)))
+        if (unlikely(!sender_task.ParseFromString(exchange_sender_receiver.encoded_task_meta(index))))
             throw Exception("parse task meta error!");
         receiver_source_task_ids.push_back(sender_task.task_id());
 

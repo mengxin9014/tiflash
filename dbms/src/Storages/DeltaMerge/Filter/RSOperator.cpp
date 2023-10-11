@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <Storages/DeltaMerge/Filter/Greater.h>
 #include <Storages/DeltaMerge/Filter/GreaterEqual.h>
 #include <Storages/DeltaMerge/Filter/In.h>
+#include <Storages/DeltaMerge/Filter/IsNull.h>
 #include <Storages/DeltaMerge/Filter/Less.h>
 #include <Storages/DeltaMerge/Filter/LessEqual.h>
 #include <Storages/DeltaMerge/Filter/Like.h>
@@ -28,10 +29,9 @@
 #include <Storages/DeltaMerge/Filter/RSOperator.h>
 #include <Storages/DeltaMerge/Filter/Unsupported.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 // clang-format off
 RSOperatorPtr createAnd(const RSOperators & children)                                           { return std::make_shared<And>(children); }
 RSOperatorPtr createEqual(const Attr & attr, const Field & value)                               { return std::make_shared<Equal>(attr, value); }
@@ -46,7 +46,8 @@ RSOperatorPtr createNotEqual(const Attr & attr, const Field & value)            
 RSOperatorPtr createNotIn(const Attr & attr, const Fields & values)                             { return std::make_shared<NotIn>(attr, values); }
 RSOperatorPtr createNotLike(const Attr & attr, const Field & value)                             { return std::make_shared<NotLike>(attr, value); }
 RSOperatorPtr createOr(const RSOperators & children)                                            { return std::make_shared<Or>(children); }
+RSOperatorPtr createIsNull(const Attr & attr)                                                   { return std::make_shared<IsNull>(attr);}
 RSOperatorPtr createUnsupported(const String & content, const String & reason, bool is_not)     { return std::make_shared<Unsupported>(content, reason, is_not); }
 // clang-format on
-} // namespace DM
-} // namespace DB
+
+} // namespace DB::DM

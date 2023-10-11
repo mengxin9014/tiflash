@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #pragma once
 
 #include <Storages/DeltaMerge/ColumnFile/ColumnFile.h>
+#include <Storages/DeltaMerge/Remote/Serializer_fwd.h>
 
 namespace DB
 {
@@ -39,43 +40,51 @@ public:
         , block_offset(offset_)
     {}
     explicit BlockOrDelete(const RowKeyRange & delete_range_)
-        : delete_range(delete_range_)
+        : block_offset(0)
+        , delete_range(delete_range_)
     {}
 
-    bool isBlock() { return (bool)block; }
+    bool isBlock() { return static_cast<bool>(block); }
     auto & getBlock() { return block; };
-    auto getBlockOffset() { return block_offset; }
+    auto getBlockOffset() const { return block_offset; }
     auto & getDeleteRange() { return delete_range; }
 };
 
 using BlockOrDeletes = std::vector<BlockOrDelete>;
 
-class ColumnFileSetSnapshot : public std::enable_shared_from_this<ColumnFileSetSnapshot>
+class ColumnFileSetSnapshot
+    : public std::enable_shared_from_this<ColumnFileSetSnapshot>
     , private boost::noncopyable
 {
     friend class MemTableSet;
     friend class ColumnFilePersistedSet;
+    friend struct Remote::Serializer;
 
 private:
-    StorageSnapshotPtr storage_snap;
-
     ColumnFiles column_files;
-    size_t rows;
-    size_t bytes;
-    size_t deletes;
+    size_t rows{0};
+    size_t bytes{0};
+    size_t deletes{0};
 
-    bool is_common_handle;
-    size_t rowkey_column_size;
+    bool is_common_handle{false};
+    size_t rowkey_column_size{0};
 
 public:
-    explicit ColumnFileSetSnapshot(const StorageSnapshotPtr & storage_snap_)
-        : storage_snap{storage_snap_}
+    /// This field is public writeable intentionally. It allows us to build a snapshot first,
+    /// then change how these data can be read later.
+    /// In disaggregated mode, we first restore the snapshot from remote proto without a specific data provider (NopProvider),
+    /// and then assign the correct data provider according to the data in the snapshot.
+    /// Why we don't know the data provider at that time? Because when we have remote proto, data is not yet received.
+    IColumnFileDataProviderPtr data_provider = nullptr;
+
+    explicit ColumnFileSetSnapshot(const IColumnFileDataProviderPtr & data_provider_)
+        : data_provider{data_provider_}
     {}
 
     ColumnFileSetSnapshotPtr clone()
     {
-        auto c = std::make_shared<ColumnFileSetSnapshot>(storage_snap);
-        c->storage_snap = storage_snap;
+        auto c = std::make_shared<ColumnFileSetSnapshot>(data_provider);
+        c->data_provider = data_provider;
         c->column_files = column_files;
         c->rows = rows;
         c->bytes = bytes;
@@ -95,7 +104,7 @@ public:
 
     RowKeyRange getSquashDeleteRange() const;
 
-    const auto & getStorageSnapshot() { return storage_snap; }
+    const auto & getDataProvider() const { return data_provider; }
 };
 
 } // namespace DM

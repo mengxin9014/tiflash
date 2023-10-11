@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
 
 #pragma once
 
-#include <Storages/Transaction/Types.h>
-
 #include <atomic>
 #include <ostream>
 
@@ -29,12 +27,13 @@ class Redact
 public:
     static void setRedactLog(bool v);
 
-    static std::string handleToDebugString(DB::HandleID handle);
+    static std::string handleToDebugString(int64_t handle);
     static std::string keyToDebugString(const char * key, size_t size);
 
     static std::string keyToHexString(const char * key, size_t size);
 
     static void keyToDebugString(const char * key, size_t size, std::ostream & oss);
+    static std::string hexStringToKey(const char * start, size_t len);
 
     friend class DB::FieldVisitorToDebugString;
 

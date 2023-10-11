@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,10 +19,14 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int SET_SIZE_LIMIT_EXCEEDED;
+extern const int SET_SIZE_LIMIT_EXCEEDED;
 }
 
-DistinctBlockInputStream::DistinctBlockInputStream(const BlockInputStreamPtr & input, const SizeLimits & set_size_limits, size_t limit_hint_, const Names & columns)
+DistinctBlockInputStream::DistinctBlockInputStream(
+    const BlockInputStreamPtr & input,
+    const SizeLimits & set_size_limits,
+    size_t limit_hint_,
+    const Names & columns)
     : columns_names(columns)
     , limit_hint(limit_hint_)
     , set_size_limits(set_size_limits)
@@ -34,7 +38,7 @@ Block DistinctBlockInputStream::readImpl()
 {
     /// Execute until end of stream or until
     /// a block with some new records will be gotten.
-    while (1)
+    while (true)
     {
         if (no_more_rows)
             return Block();
@@ -66,21 +70,26 @@ Block DistinctBlockInputStream::readImpl()
 
         switch (data.type)
         {
-            case SetVariants::Type::EMPTY:
-                break;
-        #define M(NAME) \
-            case SetVariants::Type::NAME: \
-                buildFilter(*data.NAME, column_ptrs, filter, rows, data); \
-                break;
+            using enum SetVariants::Type;
+        case EMPTY:
+            break;
+#define M(NAME)                                                   \
+    case NAME:                                                    \
+        buildFilter(*data.NAME, column_ptrs, filter, rows, data); \
+        break;
             APPLY_FOR_SET_VARIANTS(M)
-        #undef M
+#undef M
         }
 
         /// Just go to the next block if there isn't any new record in the current one.
         if (data.getTotalRowCount() == old_set_size)
             continue;
 
-        if (!set_size_limits.check(data.getTotalRowCount(), data.getTotalByteCount(), "DISTINCT", ErrorCodes::SET_SIZE_LIMIT_EXCEEDED))
+        if (!set_size_limits.check(
+                data.getTotalRowCount(),
+                data.getTotalByteCount(),
+                "DISTINCT",
+                ErrorCodes::SET_SIZE_LIMIT_EXCEEDED))
             return {};
 
         for (auto & elem : block)
@@ -123,9 +132,8 @@ ColumnRawPtrs DistinctBlockInputStream::getKeyColumns(const Block & block) const
 
     for (size_t i = 0; i < columns; ++i)
     {
-        auto & column = columns_names.empty()
-            ? block.safeGetByPosition(i).column
-            : block.getByName(columns_names[i]).column;
+        const auto & column
+            = columns_names.empty() ? block.safeGetByPosition(i).column : block.getByName(columns_names[i]).column;
 
         /// Ignore all constant columns.
         if (!column->isColumnConst())
@@ -135,4 +143,4 @@ ColumnRawPtrs DistinctBlockInputStream::getKeyColumns(const Block & block) const
     return column_ptrs;
 }
 
-}
+} // namespace DB

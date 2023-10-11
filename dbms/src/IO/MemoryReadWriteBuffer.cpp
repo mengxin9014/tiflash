@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,8 @@ extern const int CURRENT_WRITE_BUFFER_IS_EXHAUSTED;
 }
 
 
-class ReadBufferFromMemoryWriteBuffer : public ReadBuffer
+class ReadBufferFromMemoryWriteBuffer
+    : public ReadBuffer
     , boost::noncopyable
     , private Allocator<false>
 {
@@ -49,7 +50,7 @@ public:
         return setChunk();
     }
 
-    ~ReadBufferFromMemoryWriteBuffer()
+    ~ReadBufferFromMemoryWriteBuffer() override
     {
         for (const auto & range : chunk_list)
             free(range.begin(), range.size());
@@ -88,7 +89,11 @@ private:
 };
 
 
-MemoryWriteBuffer::MemoryWriteBuffer(size_t max_total_size_, size_t initial_chunk_size_, double growth_rate_, size_t max_chunk_size_)
+MemoryWriteBuffer::MemoryWriteBuffer(
+    size_t max_total_size_,
+    size_t initial_chunk_size_,
+    double growth_rate_,
+    size_t max_chunk_size_)
     : WriteBuffer(nullptr, 0)
     , max_total_size(max_total_size_)
     , initial_chunk_size(initial_chunk_size_)
@@ -138,7 +143,7 @@ void MemoryWriteBuffer::addChunk()
         }
     }
 
-    Position begin = reinterpret_cast<Position>(alloc(next_chunk_size));
+    auto * begin = reinterpret_cast<Position>(alloc(next_chunk_size));
     chunk_tail = chunk_list.emplace_after(chunk_tail, begin, begin + next_chunk_size);
     total_chunks_size += next_chunk_size;
 

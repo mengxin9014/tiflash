@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,15 +34,29 @@ namespace DB
 /// Estimate of number of bytes in cache for marks.
 struct MarksWeightFunction
 {
-    size_t operator()(const MarksInCompressedFile & marks) const
+    size_t operator()(const String & key, const MarksInCompressedFile & marks) const
     {
-        /// NOTE Could add extra 100 bytes for overhead of std::vector, cache structures and allocator.
-        return marks.size() * sizeof(MarkInCompressedFile);
+        auto mark_memory_usage = marks.allocated_bytes(); // marksInCompressedFile
+        auto cells_memory_usage = 32; // Cells struct memory cost
+        auto pod_array_memory_usage = sizeof(decltype(marks)); // PODArray struct memory cost
+
+        // 2. the memory cost of key part
+        auto str_len = key.size(); // key_len
+        auto key_memory_usage = sizeof(String); // String struct memory cost
+
+        // 3. the memory cost of hash table
+        auto unordered_map_memory_usage = 28; // hash table struct approximate memory cost
+
+        // 4. the memory cost of LRUQueue
+        auto list_memory_usage = sizeof(std::list<String>); // list struct memory cost
+
+        return mark_memory_usage + cells_memory_usage + pod_array_memory_usage + str_len * 2 + key_memory_usage * 2
+            + unordered_map_memory_usage + list_memory_usage;
     }
 };
 
 
-/** Cache of 'marks' for StorageMergeTree.
+/** Cache of 'marks' for StorageDeltaMerge.
   * Marks is an index structure that addresses ranges in column file, corresponding to ranges of primary key.
   */
 class MarkCache : public LRUCache<String, MarksInCompressedFile, std::hash<String>, MarksWeightFunction>
@@ -51,8 +65,8 @@ private:
     using Base = LRUCache<String, MarksInCompressedFile, std::hash<String>, MarksWeightFunction>;
 
 public:
-    MarkCache(size_t max_size_in_bytes, const Delay & expiration_delay)
-        : Base(max_size_in_bytes, expiration_delay)
+    explicit MarkCache(size_t max_size_in_bytes)
+        : Base(max_size_in_bytes)
     {}
 
     template <typename LoadFunc>

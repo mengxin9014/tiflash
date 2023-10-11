@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 #pragma once
 
 #include <Storages/DeltaMerge/RowKeyRange.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/PageDefinesBase.h>
 #include <fmt/core.h>
 
 namespace DB::DM
@@ -26,20 +26,14 @@ struct ExternalDTFileInfo
     /**
      * The allocated PageId of the file.
      */
-    PageId id;
+    PageIdU64 id;
 
     /**
      * The handle range of contained data.
      */
     RowKeyRange range;
 
-    std::string toString() const
-    {
-        return fmt::format(
-            "<file=dmf_{} range={}>",
-            id,
-            range.toDebugString());
-    }
+    std::string toString() const { return fmt::format("<file=dmf_{} range={}>", id, range.toDebugString()); }
 };
 
 } // namespace DB::DM

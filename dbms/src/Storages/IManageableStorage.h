@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,16 @@
 
 #pragma once
 
+#include <Common/UniThreadPool.h>
 #include <DataStreams/IBlockInputStream.h>
 #include <DataTypes/DataTypesNumber.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Storages/IStorage.h>
-#include <Storages/Transaction/DecodingStorageSchemaSnapshot.h>
-#include <Storages/Transaction/StorageEngineType.h>
-#include <Storages/Transaction/TiKVHandle.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/KVStore/Decode/DecodingStorageSchemaSnapshot.h>
+#include <Storages/KVStore/Decode/TiKVHandle.h>
+#include <Storages/KVStore/StorageEngineType.h>
+#include <Storages/KVStore/Types.h>
+
 
 namespace TiDB
 {
@@ -69,8 +71,16 @@ public:
 
     virtual void flushCache(const Context & /*context*/) {}
 
-    virtual bool flushCache(const Context & /*context*/, const DM::RowKeyRange & /*range_to_flush*/, [[maybe_unused]] bool try_until_succeed = true) { return true; }
+    virtual bool flushCache(
+        const Context & /*context*/,
+        const DM::RowKeyRange & /*range_to_flush*/,
+        [[maybe_unused]] bool try_until_succeed)
+    {
+        return true;
+    }
 
+    // Get the statistics of this table.
+    // Used by `manage table xxx status` in ch-client
     virtual BlockInputStreamPtr status() { return {}; }
 
     virtual void checkStatus(const Context &) {}
@@ -81,7 +91,7 @@ public:
     virtual UInt64 onSyncGc(Int64 /*limit*/, const DM::GCOptions &) { throw Exception("Unsupported"); }
 
     /// Return true is data dir exist
-    virtual bool initStoreIfDataDirExist() { throw Exception("Unsupported"); }
+    virtual bool initStoreIfDataDirExist(ThreadPool * /*thread_pool*/) { throw Exception("Unsupported"); }
 
     virtual ::TiDB::StorageEngine engineType() const = 0;
 
@@ -96,9 +106,7 @@ public:
     Timestamp getTombstone() const { return tombstone; }
     void setTombstone(Timestamp tombstone_) { IManageableStorage::tombstone = tombstone_; }
 
-    /// Apply AlterCommands synced from TiDB should use `alterFromTiDB` instead of `alter(...)`
-    /// Once called, table_info is guaranteed to be persisted, regardless commands being empty or not.
-    virtual void alterFromTiDB(
+    virtual void updateTombstone(
         const TableLockHolder &,
         const AlterCommands & commands,
         const String & database_name,
@@ -107,6 +115,15 @@ public:
         const Context & context)
         = 0;
 
+    virtual void alterSchemaChange(
+        const TableLockHolder &,
+        TiDB::TableInfo & table_info,
+        const String & database_name,
+        const String & table_name,
+        const Context & context)
+        = 0;
+
+    virtual DM::ColumnDefines getStoreColumnDefines() const = 0;
     /// Rename the table.
     ///
     /// Renaming a name in a file with metadata, the name in the list of tables in the RAM, is done separately.
@@ -130,7 +147,9 @@ public:
 
     virtual void modifyASTStorage(ASTStorage * /*storage*/, const TiDB::TableInfo & /*table_info*/)
     {
-        throw Exception("Method modifyASTStorage is not supported by storage " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+        throw Exception(
+            "Method modifyASTStorage is not supported by storage " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
     }
 
     /// Remove this storage from TMTContext. Should be called after its metadata and data have been removed from disk.
@@ -138,13 +157,13 @@ public:
 
     PKType getPKType() const
     {
-        static const DataTypeInt64 & dataTypeInt64 = {};
-        static const DataTypeUInt64 & dataTypeUInt64 = {};
+        static const DataTypeInt64 & data_type_int64 = {};
+        static const DataTypeUInt64 & data_type_u_int64 = {};
 
         auto pk_data_type = getPKTypeImpl();
-        if (pk_data_type->equals(dataTypeInt64))
+        if (pk_data_type->equals(data_type_int64))
             return PKType::INT64;
-        else if (pk_data_type->equals(dataTypeUInt64))
+        else if (pk_data_type->equals(data_type_u_int64))
             return PKType::UINT64;
         return PKType::UNSPECIFIED;
     }
@@ -159,16 +178,22 @@ public:
     ///     and `releaseDecodingBlock` need to be called when the block is free
     /// when `need_block` is false, it will just return an nullptr
     /// This method must be called under the protection of table structure lock
-    virtual std::pair<DB::DecodingStorageSchemaSnapshotConstPtr, BlockUPtr> getSchemaSnapshotAndBlockForDecoding(const TableStructureLockHolder & /* table_structure_lock */, bool /* need_block */)
+    virtual std::pair<DB::DecodingStorageSchemaSnapshotConstPtr, BlockUPtr> getSchemaSnapshotAndBlockForDecoding(
+        const TableStructureLockHolder & /* table_structure_lock */,
+        bool /* need_block */)
     {
-        throw Exception("Method getDecodingSchemaSnapshot is not supported by storage " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+        throw Exception(
+            "Method getDecodingSchemaSnapshot is not supported by storage " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
     };
 
-    /// The `block_decoding_schema_version` is just an internal version for `DecodingStorageSchemaSnapshot`,
+    /// The `block_decoding_schema_epoch` is just an internal version for `DecodingStorageSchemaSnapshot`,
     /// And it has no relation with the table schema version.
-    virtual void releaseDecodingBlock(Int64 /* block_decoding_schema_version */, BlockUPtr /* block */)
+    virtual void releaseDecodingBlock(Int64 /* block_decoding_schema_epoch */, BlockUPtr /* block */)
     {
-        throw Exception("Method getDecodingSchemaSnapshot is not supported by storage " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+        throw Exception(
+            "Method getDecodingSchemaSnapshot is not supported by storage " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
     }
 
 private:

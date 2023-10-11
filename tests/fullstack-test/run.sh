@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,3 +32,11 @@ docker-compose -f cluster.yaml -f tiflash-dt.yaml exec -T tiflash0 bash -c 'cd /
 
 docker-compose -f cluster.yaml -f tiflash-dt.yaml down
 clean_data_log
+
+docker-compose -f cluster.yaml -f tiflash-dt-sync-grpc.yaml up -d
+wait_env
+docker-compose -f cluster.yaml -f tiflash-dt-sync-grpc.yaml exec -T tiflash0 bash -c 'cd /tests ; ./run-test.sh fullstack-test/mpp'
+
+docker-compose -f cluster.yaml -f tiflash-dt-sync-grpc.yaml down
+clean_data_log
+

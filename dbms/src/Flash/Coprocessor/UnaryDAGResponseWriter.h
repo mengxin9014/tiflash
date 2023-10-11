@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,13 +32,10 @@ namespace DB
 class UnaryDAGResponseWriter : public DAGResponseWriter
 {
 public:
-    UnaryDAGResponseWriter(
-        tipb::SelectResponse * response_,
-        Int64 records_per_chunk_,
-        DAGContext & dag_context_);
+    UnaryDAGResponseWriter(tipb::SelectResponse * response_, Int64 records_per_chunk_, DAGContext & dag_context_);
 
     void write(const Block & block) override;
-    void finishWrite() override;
+    void flush() override;
     void encodeChunkToDAGResponse();
     void appendWarningsToDAGResponse();
 
@@ -46,7 +43,6 @@ private:
     tipb::SelectResponse * dag_response;
     std::unique_ptr<ChunkCodecStream> chunk_codec_stream;
     Int64 current_records_num;
-    std::unordered_map<String, std::tuple<UInt64, UInt64, UInt64>> previous_execute_stats;
 };
 
 } // namespace DB

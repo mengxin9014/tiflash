@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,11 @@ namespace DB::tests
 {
 std::unordered_map<String, tipb::ScalarFuncSig> func_name_to_sig({
     {"plusint", tipb::ScalarFuncSig::PlusInt},
+    {"plusreal", tipb::ScalarFuncSig::PlusReal},
+    {"plusdecimal", tipb::ScalarFuncSig::PlusDecimal},
     {"minusint", tipb::ScalarFuncSig::MinusInt},
+    {"minusreal", tipb::ScalarFuncSig::MinusReal},
+    {"minusdecimal", tipb::ScalarFuncSig::MinusDecimal},
     {"equals", tipb::ScalarFuncSig::EQInt},
     {"notEquals", tipb::ScalarFuncSig::NEInt},
     {"and", tipb::ScalarFuncSig::LogicalAnd},
@@ -31,6 +35,7 @@ std::unordered_map<String, tipb::ScalarFuncSig> func_name_to_sig({
     {"lessorequals", tipb::ScalarFuncSig::LEInt},
     {"in", tipb::ScalarFuncSig::InInt},
     {"notin", tipb::ScalarFuncSig::InInt},
+    {"isnull", tipb::ScalarFuncSig::IntIsNull},
     {"date_format", tipb::ScalarFuncSig::DateFormatSig},
     {"if", tipb::ScalarFuncSig::IfInt},
     {"from_unixtime", tipb::ScalarFuncSig::FromUnixTime2Arg},
@@ -95,5 +100,7 @@ std::unordered_map<String, tipb::ExprType> window_func_name_to_sig({
     {"DenseRank", tipb::ExprType::DenseRank},
     {"Lead", tipb::ExprType::Lead},
     {"Lag", tipb::ExprType::Lag},
+    {"FirstValue", tipb::ExprType::FirstValue},
+    {"LastValue", tipb::ExprType::LastValue},
 });
 } // namespace DB::tests

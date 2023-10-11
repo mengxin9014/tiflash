@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@
 #include <Storages/DeltaMerge/DeltaIndex.h>
 #include <Storages/DeltaMerge/File/DMFile.h>
 #include <Storages/DeltaMerge/RowKeyRange.h>
-#include <Storages/DeltaMerge/WriteBatches.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/PageDefinesBase.h>
 #include <common/logger_useful.h>
 
 namespace DB
 {
 namespace DM
 {
+struct WriteBatches;
 class MemTableSet;
 using MemTableSetPtr = std::shared_ptr<MemTableSet>;
 class ColumnFilePersistedSet;
@@ -47,7 +47,7 @@ public:
         ColumnFilePtr column_file;
 
         Block block_data;
-        PageId data_page = 0;
+        PageIdU64 data_page = 0;
 
         bool sorted = false;
         size_t rows_offset = 0;

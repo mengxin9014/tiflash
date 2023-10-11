@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,4 +27,4 @@ add_library(page_storage_v3 EXCLUDE_FROM_ALL
     ${io_base_headers} ${io_base_sources}
 )
 target_include_directories(page_storage_v3 PUBLIC ${TiFlash_SOURCE_DIR}/contrib/tiflash-proxy/raftstore-proxy/ffi/src)
-target_link_libraries(page_storage_v3 clickhouse_common_io cpptoml kv_client tipb) 
+target_link_libraries(page_storage_v3 tiflash_common_io cpptoml kv_client tipb) 

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/WriteHelpers.h>
-#include <IO/WriteBufferValidUTF8.h>
 #include <DataStreams/XMLRowOutputStream.h>
+#include <IO/WriteBufferValidUTF8.h>
+#include <IO/WriteHelpers.h>
 
 
 namespace DB
 {
-
 XMLRowOutputStream::XMLRowOutputStream(WriteBuffer & ostr_, const Block & sample_, bool write_statistics_)
-    : dst_ostr(ostr_), write_statistics(write_statistics_)
+    : dst_ostr(ostr_)
+    , write_statistics(write_statistics_)
 {
     NamesAndTypesList columns(sample_.getNamesAndTypesList());
     fields.assign(columns.begin(), columns.end());
@@ -41,20 +41,14 @@ XMLRowOutputStream::XMLRowOutputStream(WriteBuffer & ostr_, const Block & sample
         for (const char * pos = begin; pos != end; ++pos)
         {
             char c = *pos;
-            if (!( isAlphaASCII(c)
-                || (pos != begin && isNumericASCII(c))
-                || c == '_'
-                || c == '-'
-                || c == '.'))
+            if (!(isAlphaASCII(c) || (pos != begin && isNumericASCII(c)) || c == '_' || c == '-' || c == '.'))
             {
                 is_column_name_suitable = false;
                 break;
             }
         }
 
-        field_tag_names[i] = is_column_name_suitable
-            ? fields[i].name
-            : "field";
+        field_tag_names[i] = is_column_name_suitable ? fields[i].name : "field";
     }
 
     if (need_validate_utf8)
@@ -74,15 +68,15 @@ void XMLRowOutputStream::writePrefix()
     writeCString("\t<meta>\n", *ostr);
     writeCString("\t\t<columns>\n", *ostr);
 
-    for (size_t i = 0; i < fields.size(); ++i)
+    for (auto & field : fields)
     {
         writeCString("\t\t\t<column>\n", *ostr);
 
         writeCString("\t\t\t\t<name>", *ostr);
-        writeXMLString(fields[i].name, *ostr);
+        writeXMLString(field.name, *ostr);
         writeCString("</name>\n", *ostr);
         writeCString("\t\t\t\t<type>", *ostr);
-        writeXMLString(fields[i].type->getName(), *ostr);
+        writeXMLString(field.type->getName(), *ostr);
         writeCString("</type>\n", *ostr);
 
         writeCString("\t\t\t</column>\n", *ostr);
@@ -125,7 +119,6 @@ void XMLRowOutputStream::writeSuffix()
 {
     writeCString("\t</data>\n", *ostr);
 
-    writeTotals();
     writeExtremes();
 
     writeCString("\t<rows>", *ostr);
@@ -151,32 +144,12 @@ void XMLRowOutputStream::writeRowsBeforeLimitAtLeast()
     }
 }
 
-void XMLRowOutputStream::writeTotals()
-{
-    if (totals)
-    {
-        writeCString("\t<totals>\n", *ostr);
-
-        size_t totals_columns = totals.columns();
-        for (size_t i = 0; i < totals_columns; ++i)
-        {
-            const ColumnWithTypeAndName & column = totals.safeGetByPosition(i);
-
-            writeCString("\t\t<", *ostr);
-            writeString(field_tag_names[i], *ostr);
-            writeCString(">", *ostr);
-            column.type->serializeTextXML(*column.column.get(), 0, *ostr);
-            writeCString("</", *ostr);
-            writeString(field_tag_names[i], *ostr);
-            writeCString(">\n", *ostr);
-        }
-
-        writeCString("\t</totals>\n", *ostr);
-    }
-}
-
-
-static void writeExtremesElement(const char * title, const Block & extremes, size_t row_num, const Names & field_tag_names, WriteBuffer & ostr)
+static void writeExtremesElement(
+    const char * title,
+    const Block & extremes,
+    size_t row_num,
+    const Names & field_tag_names,
+    WriteBuffer & ostr)
 {
     writeCString("\t\t<", ostr);
     writeCString(title, ostr);
@@ -234,4 +207,4 @@ void XMLRowOutputStream::writeStatistics()
     writeCString("\t</statistics>\n", *ostr);
 }
 
-}
+} // namespace DB

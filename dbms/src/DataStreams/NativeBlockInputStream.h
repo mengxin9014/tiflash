@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <Common/PODArray.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
 #include <DataStreams/MarkInCompressedFile.h>
+#include <Flash/Coprocessor/CodecUtils.h>
 #include <IO/CompressedReadBufferFromFile.h>
 
 namespace DB
@@ -52,10 +53,7 @@ struct IndexForNativeFormat
 
     IndexForNativeFormat() {}
 
-    IndexForNativeFormat(ReadBuffer & istr, const NameSet & required_columns)
-    {
-        read(istr, required_columns);
-    }
+    IndexForNativeFormat(ReadBuffer & istr, const NameSet & required_columns) { read(istr, required_columns); }
 
     /// Read the index, only for the required columns.
     void read(ReadBuffer & istr, const NameSet & required_columns);
@@ -72,15 +70,10 @@ class NativeBlockInputStream : public IProfilingBlockInputStream
 {
 public:
     /// provide output column names explicitly
-    NativeBlockInputStream(
-        ReadBuffer & istr_,
-        UInt64 server_revision_,
-        std::vector<String> && output_names_);
+    NativeBlockInputStream(ReadBuffer & istr_, UInt64 server_revision_, std::vector<String> && output_names_);
 
     /// If a non-zero server_revision is specified, additional block information may be expected and read.
-    NativeBlockInputStream(
-        ReadBuffer & istr_,
-        UInt64 server_revision_);
+    NativeBlockInputStream(ReadBuffer & istr_, UInt64 server_revision_);
 
     /// For cases when data structure (header) is known in advance.
     /// NOTE We may use header for data validation and/or type conversions. It is not implemented.
@@ -116,19 +109,7 @@ private:
     Block header;
     UInt64 server_revision;
     bool align_column_name_with_header = false;
-
-    struct DataTypeWithTypeName
-    {
-        DataTypeWithTypeName(const DataTypePtr & t, const String & n)
-            : type(t)
-            , name(n)
-        {
-        }
-
-        DataTypePtr type;
-        String name;
-    };
-    std::vector<DataTypeWithTypeName> header_datatypes;
+    std::vector<CodecUtils::DataTypeWithTypeName> header_datatypes;
 
     bool use_index = false;
     IndexForNativeFormat::Blocks::const_iterator index_block_it;
@@ -136,7 +117,7 @@ private:
     IndexOfBlockForNativeFormat::Columns::const_iterator index_column_it;
 
     /// If an index is specified, then `istr` must be CompressedReadBufferFromFile.
-    CompressedReadBufferFromFile<> * istr_concrete;
+    CompressedReadBufferFromFile<> * istr_concrete = nullptr;
 
     PODArray<double> avg_value_size_hints;
 

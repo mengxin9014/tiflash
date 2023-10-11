@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 
 namespace DB::PS::tests
 {
-class HoldSnapshotsLongTime : public StressWorkload
+class HoldSnapshotsLongTime
+    : public StressWorkload
     , public StressWorkloadFunc<HoldSnapshotsLongTime>
 {
 public:
@@ -24,26 +25,21 @@ public:
         : StressWorkload(options_)
     {}
 
-    static String name()
-    {
-        return "HoldSnapshotsLongTime";
-    }
+    static String name() { return "HoldSnapshotsLongTime"; }
 
-    static UInt64 mask()
-    {
-        return 1 << 6;
-    }
+    static UInt64 mask() { return 1 << 6; }
 
 private:
     String desc() override
     {
-        return fmt::format("Some of options will be ignored"
-                           "`paths` will only used first one. which is {}. Data will store in {}"
-                           "Please cleanup folder after this test."
-                           "The current workload will elapse near 60 seconds and generator 100 snapshot in memory."
-                           "Then do NORMAL GC + SKIP GC at the last.",
-                           options.paths[0],
-                           options.paths[0] + "/" + name());
+        return fmt::format(
+            "Some of options will be ignored"
+            "`paths` will only used first one. which is {}. Data will store in {}"
+            "Please cleanup folder after this test."
+            "The current workload will elapse near 60 seconds and generator 100 snapshot in memory."
+            "Then do NORMAL GC + SKIP GC at the last.",
+            options.paths[0],
+            options.paths[0] + "/" + name());
     }
 
     void run() override
@@ -52,22 +48,14 @@ private:
         DB::PageStorageConfig config;
         initPageStorage(config, name());
 
-        metrics_dumper = std::make_shared<PSMetricsDumper>(1);
-        metrics_dumper->start();
-
-        stress_time = std::make_shared<StressTimeout>(60);
-        stress_time->start();
-
-        scanner = std::make_shared<PSScanner>(ps);
-        scanner->start();
+        startBackgroundTimer();
 
         // 90-100 snapshots will be generated.
         {
             stop_watch.start();
             startWriter<PSWindowWriter>(options.num_writers, [](std::shared_ptr<PSWindowWriter> writer) -> void {
                 writer->setBatchBufferNums(1);
-                writer->setBatchBufferRange(10 * 1024, 1 * DB::MB);
-                writer->setWindowSize(500);
+                writer->setBufferSizeRange(10 * 1024, 1 * DB::MB);
                 writer->setNormalDistributionSigma(13);
             });
 
@@ -79,7 +67,7 @@ private:
             stop_watch.stop();
         }
 
-        gc = std::make_shared<PSGc>(ps);
+        gc = std::make_shared<PSGc>(ps, options.gc_interval_s);
         // Normal GC
         gc->doGcOnce();
 
@@ -89,9 +77,6 @@ private:
         gc->doGcOnce();
     }
 
-    bool verify() override
-    {
-        return true;
-    }
+    bool verify() override { return true; }
 };
 } // namespace DB::PS::tests

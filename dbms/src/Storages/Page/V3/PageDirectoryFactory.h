@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,10 @@
 
 #pragma once
 
-#include <Storages/Page/PageDefines.h>
 #include <Storages/Page/V3/Blob/BlobStat.h>
 #include <Storages/Page/V3/BlobStore.h>
+#include <Storages/Page/V3/PageDefines.h>
+#include <Storages/Page/V3/PageDirectory.h>
 #include <Storages/Page/V3/PageEntriesEdit.h>
 #include <Storages/Page/V3/WALStore.h>
 
@@ -27,8 +28,6 @@ using PSDiskDelegatorPtr = std::shared_ptr<PSDiskDelegator>;
 
 namespace PS::V3
 {
-class PageDirectory;
-using PageDirectoryPtr = std::unique_ptr<PageDirectory>;
 class WALStoreReader;
 using WALStoreReaderPtr = std::shared_ptr<WALStoreReader>;
 
@@ -36,26 +35,42 @@ using WALStoreReaderPtr = std::shared_ptr<WALStoreReader>;
   * A helper class for creating `PageDirectory` instance and restore data from disk.
   * During restoring data, we need to restore `BlobStore::BlobStats` at the same time.
   */
+template <typename Trait>
 class PageDirectoryFactory
 {
 public:
+    using PageEntriesEdit = PageEntriesEdit<typename Trait::PageId>;
+    using PageDirectoryPtr = std::unique_ptr<typename Trait::PageDirectory>;
+
+public:
     PageVersion max_applied_ver;
 
-    PageDirectoryFactory & setBlobStore(BlobStore & blob_store)
+    PageDirectoryFactory<Trait> & setBlobStore(typename Trait::BlobStore & blob_store)
     {
         blob_stats = &blob_store.blob_stats;
         return *this;
     }
 
-    PageDirectoryPtr create(String storage_name, FileProviderPtr & file_provider, PSDiskDelegatorPtr & delegator, WALConfig config);
+    PageDirectoryPtr create(
+        const String & storage_name,
+        FileProviderPtr & file_provider,
+        PSDiskDelegatorPtr & delegator,
+        const WALConfig & config);
 
-    PageDirectoryPtr createFromReader(String storage_name, WALStoreReaderPtr reader, WALStorePtr wal, bool for_dump_snapshot = false);
+    PageDirectoryPtr createFromReader(const String & storage_name, WALStoreReaderPtr reader, WALStorePtr wal);
+
+    // create a PageDirectory which can only be manipulated with memory-only operations
+    PageDirectoryPtr dangerouslyCreateFromEditWithoutWAL(const String & storage_name, PageEntriesEdit & edit);
 
     // just for test
-    PageDirectoryPtr createFromEdit(String storage_name, FileProviderPtr & file_provider, PSDiskDelegatorPtr & delegator, const PageEntriesEdit & edit);
+    PageDirectoryPtr createFromEditForTest(
+        const String & storage_name,
+        FileProviderPtr & file_provider,
+        PSDiskDelegatorPtr & delegator,
+        PageEntriesEdit & edit);
 
     // just for test
-    PageDirectoryFactory & setBlobStats(BlobStats & blob_stats_)
+    PageDirectoryFactory<Trait> & setBlobStats(BlobStats & blob_stats_)
     {
         blob_stats = &blob_stats_;
         return *this;
@@ -63,14 +78,50 @@ public:
 
 private:
     void loadFromDisk(const PageDirectoryPtr & dir, WALStoreReaderPtr && reader);
-    void loadEdit(const PageDirectoryPtr & dir, const PageEntriesEdit & edit);
+    void loadEdit(const PageDirectoryPtr & dir, const PageEntriesEdit & edit, bool force_apply, UInt64 filter_seq = 0);
     static void applyRecord(
         const PageDirectoryPtr & dir,
-        const PageEntriesEdit::EditRecord & r);
+        const typename PageEntriesEdit::EditRecord & r,
+        bool strict_check);
+
+    void restoreBlobStats(const PageDirectoryPtr & dir);
 
     BlobStats * blob_stats = nullptr;
+
+    // For debug tool
+    template <typename T>
+    friend class PageStorageControlV3;
+    struct DebugOptions
+    {
+        bool dump_entries = false;
+        bool apply_entries_to_directory = true;
+    };
+    DebugOptions debug;
 };
 
+namespace u128
+{
+struct FactoryTrait
+{
+    using PageId = PageIdV3Internal;
+    using PageDirectory = PageDirectoryType;
+    using BlobStore = BlobStoreType;
+    using PageIdTrait = PageIdTrait;
+    using Serializer = Serializer;
+};
+using PageDirectoryFactory = DB::PS::V3::PageDirectoryFactory<FactoryTrait>;
+} // namespace u128
+namespace universal
+{
+struct FactoryTrait
+{
+    using PageId = UniversalPageId;
+    using PageDirectory = PageDirectoryType;
+    using BlobStore = BlobStoreType;
+    using PageIdTrait = PageIdTrait;
+    using Serializer = Serializer;
+};
+using PageDirectoryFactory = DB::PS::V3::PageDirectoryFactory<FactoryTrait>;
+} // namespace universal
 } // namespace PS::V3
-
 } // namespace DB

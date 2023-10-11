@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,31 +31,7 @@ namespace ErrorCodes
 extern const int INCORRECT_INDEX;
 extern const int LOGICAL_ERROR;
 extern const int CANNOT_READ_ALL_DATA;
-extern const int NOT_IMPLEMENTED;
 } // namespace ErrorCodes
-
-namespace
-{
-void checkColumnSize(size_t expected, size_t actual)
-{
-    if (expected != actual)
-        throw Exception(
-            fmt::format("NativeBlockInputStream schema mismatch, expected {}, actual {}.", expected, actual),
-            ErrorCodes::LOGICAL_ERROR);
-}
-
-void checkDataTypeName(size_t column_index, const String & expected, const String & actual)
-{
-    if (expected != actual)
-        throw Exception(
-            fmt::format(
-                "NativeBlockInputStream schema mismatch at column {}, expected {}, actual {}",
-                column_index,
-                expected,
-                actual),
-            ErrorCodes::LOGICAL_ERROR);
-}
-} // namespace
 
 NativeBlockInputStream::NativeBlockInputStream(
     ReadBuffer & istr_,
@@ -64,16 +40,12 @@ NativeBlockInputStream::NativeBlockInputStream(
     : istr(istr_)
     , server_revision(server_revision_)
     , output_names(std::move(output_names_))
-{
-}
+{}
 
-NativeBlockInputStream::NativeBlockInputStream(
-    ReadBuffer & istr_,
-    UInt64 server_revision_)
+NativeBlockInputStream::NativeBlockInputStream(ReadBuffer & istr_, UInt64 server_revision_)
     : istr(istr_)
     , server_revision(server_revision_)
-{
-}
+{}
 
 NativeBlockInputStream::NativeBlockInputStream(
     ReadBuffer & istr_,
@@ -102,7 +74,9 @@ NativeBlockInputStream::NativeBlockInputStream(
 {
     istr_concrete = typeid_cast<CompressedReadBufferFromFile<> *>(&istr);
     if (!istr_concrete)
-        throw Exception("When need to use index for NativeBlockInputStream, istr must be CompressedReadBufferFromFile.", ErrorCodes::LOGICAL_ERROR);
+        throw Exception(
+            "When need to use index for NativeBlockInputStream, istr must be CompressedReadBufferFromFile.",
+            ErrorCodes::LOGICAL_ERROR);
 
     if (index_block_it == index_block_end)
         return;
@@ -179,9 +153,9 @@ Block NativeBlockInputStream::readImpl()
     }
 
     if (header)
-        checkColumnSize(header.columns(), columns);
+        CodecUtils::checkColumnSize(header.columns(), columns);
     else if (!output_names.empty())
-        checkColumnSize(output_names.size(), columns);
+        CodecUtils::checkColumnSize(output_names.size(), columns);
 
     for (size_t i = 0; i < columns; ++i)
     {
@@ -208,7 +182,7 @@ Block NativeBlockInputStream::readImpl()
         readBinary(type_name, istr);
         if (header)
         {
-            checkDataTypeName(i, header_datatypes[i].name, type_name);
+            CodecUtils::checkDataTypeName(i, header_datatypes[i].name, type_name);
             column.type = header_datatypes[i].type;
         }
         else
@@ -220,9 +194,13 @@ Block NativeBlockInputStream::readImpl()
         {
             /// Index allows to do more checks.
             if (index_column_it->name != column.name)
-                throw Exception("Index points to column with wrong name: corrupted index or data", ErrorCodes::INCORRECT_INDEX);
+                throw Exception(
+                    "Index points to column with wrong name: corrupted index or data",
+                    ErrorCodes::INCORRECT_INDEX);
             if (index_column_it->type != type_name)
-                throw Exception("Index points to column with wrong type: corrupted index or data", ErrorCodes::INCORRECT_INDEX);
+                throw Exception(
+                    "Index points to column with wrong type: corrupted index or data",
+                    ErrorCodes::INCORRECT_INDEX);
         }
 
         /// Data
@@ -259,7 +237,7 @@ void NativeBlockInputStream::updateAvgValueSizeHints(const Block & block)
     if (rows < 10)
         return;
 
-    avg_value_size_hints.resize_fill(block.columns(), 0);
+    avg_value_size_hints.resize_fill(block.columns());
 
     for (auto idx : ext::range(0, block.columns()))
     {

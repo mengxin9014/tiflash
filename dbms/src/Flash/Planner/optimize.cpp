@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,12 +40,12 @@ public:
 
 PhysicalPlanNodePtr optimize(const Context & context, PhysicalPlanNodePtr plan, const LoggerPtr & log)
 {
-    assert(plan);
+    RUNTIME_CHECK(plan);
     static std::vector<RulePtr> rules{FinalizeRule::create()};
     for (const auto & rule : rules)
     {
         plan = rule->apply(context, plan, log);
-        assert(plan);
+        RUNTIME_CHECK(plan);
     }
     return plan;
 }

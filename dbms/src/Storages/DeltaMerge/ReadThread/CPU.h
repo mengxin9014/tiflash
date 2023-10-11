@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +13,16 @@
 // limitations under the License.
 #pragma once
 
-#include <Poco/Logger.h>
-
 #include <vector>
+
+namespace DB
+{
+class Logger;
+using LoggerPtr = std::shared_ptr<Logger>;
+} // namespace DB
 
 namespace DB::DM
 {
 // `getNumaNodes` returns cpus of each Numa node.
-std::vector<std::vector<int>> getNumaNodes(Poco::Logger * log);
+std::vector<std::vector<int>> getNumaNodes(const LoggerPtr & log);
 } // namespace DB::DM

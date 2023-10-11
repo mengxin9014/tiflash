@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -82,14 +82,12 @@ private:
 
     explicit ColumnAggregateFunction(const AggregateFunctionPtr & func_)
         : func(func_)
-    {
-    }
+    {}
 
     ColumnAggregateFunction(const AggregateFunctionPtr & func_, const Arenas & arenas_)
         : arenas(arenas_)
         , func(func_)
-    {
-    }
+    {}
 
     ColumnAggregateFunction(const ColumnAggregateFunction & src_)
         : COWPtrHelper<IColumn, ColumnAggregateFunction>(src_)
@@ -97,16 +95,12 @@ private:
         , func(src_.func)
         , src(src_.getPtr())
         , data(src_.data.begin(), src_.data.end())
-    {
-    }
+    {}
 
 public:
     ~ColumnAggregateFunction();
 
-    void set(const AggregateFunctionPtr & func_)
-    {
-        func = func_;
-    }
+    void set(const AggregateFunctionPtr & func_) { func = func_; }
 
     AggregateFunctionPtr getAggregateFunction() { return func; }
     AggregateFunctionPtr getAggregateFunction() const { return func; }
@@ -114,17 +108,10 @@ public:
     /// Take shared ownership of Arena, that holds memory for states of aggregate functions.
     void addArena(ArenaPtr arena_);
 
-    /** Transform column with states of aggregate functions to column with final result values.
-      */
-    MutableColumnPtr convertToValues() const;
-
     std::string getName() const override { return "AggregateFunction(" + func->getName() + ")"; }
     const char * getFamilyName() const override { return "AggregateFunction"; }
 
-    size_t size() const override
-    {
-        return getData().size();
-    }
+    size_t size() const override { return getData().size(); }
 
     MutableColumnPtr cloneEmpty() const override;
 
@@ -137,6 +124,18 @@ public:
     void insertData(const char * pos, size_t length) override;
 
     void insertFrom(const IColumn & src, size_t n) override;
+
+    void insertManyFrom(const IColumn & src_, size_t n, size_t length) override
+    {
+        for (size_t i = 0; i < length; ++i)
+            insertFrom(src_, n);
+    }
+
+    void insertDisjunctFrom(const IColumn & src_, const std::vector<size_t> & position_vec) override
+    {
+        for (auto position : position_vec)
+            insertFrom(src_, position);
+    }
 
     void insertFrom(ConstAggregateDataPtr __restrict place);
 
@@ -151,17 +150,31 @@ public:
 
     void insertDefault() override;
 
-    StringRef serializeValueIntoArena(size_t n, Arena & dst, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void insertManyDefaults(size_t length) override
+    {
+        for (size_t i = 0; i < length; ++i)
+            insertDefault();
+    }
+
+    StringRef serializeValueIntoArena(
+        size_t n,
+        Arena & dst,
+        char const *& begin,
+        const TiDB::TiDBCollatorPtr &,
+        String &) const override;
 
     const char * deserializeAndInsertFromArena(const char * src_arena, const TiDB::TiDBCollatorPtr &) override;
 
     void updateHashWithValue(size_t n, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
-    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+        const override;
 
     void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
     size_t byteSize() const override;
+
+    size_t estimateByteSizeForSpill() const override;
 
     size_t allocatedBytes() const override;
 
@@ -173,29 +186,22 @@ public:
 
     ColumnPtr permute(const Permutation & perm, size_t limit) const override;
 
-    ColumnPtr replicate(const Offsets & offsets) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const override;
 
     MutableColumns scatter(ColumnIndex num_columns, const Selector & selector) const override;
 
+    void scatterTo(ScatterColumns & columns, const Selector & selector) const override;
+
     void gather(ColumnGathererStream & gatherer_stream) override;
 
-    int compareAt(size_t, size_t, const IColumn &, int) const override
-    {
-        return 0;
-    }
+    int compareAt(size_t, size_t, const IColumn &, int) const override { return 0; }
 
     void getPermutation(bool reverse, size_t limit, int nan_direction_hint, Permutation & res) const override;
 
     /** More efficient manipulation methods */
-    Container & getData()
-    {
-        return data;
-    }
+    Container & getData() { return data; }
 
-    const Container & getData() const
-    {
-        return data;
-    }
+    const Container & getData() const { return data; }
 
     void getExtremes(Field & min, Field & max) const override;
 };

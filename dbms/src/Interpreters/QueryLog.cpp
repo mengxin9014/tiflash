@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ Block QueryLogElement::createBlock()
 
 static std::array<char, 16> IPv6ToBinary(const Poco::Net::IPAddress & address)
 {
-    std::array<char, 16> res;
+    std::array<char, 16> res{};
 
     if (Poco::Net::IPAddress::IPv6 == address.family())
     {
@@ -150,9 +150,6 @@ void QueryLogElement::appendToBlock(Block & block) const
     columns[i++]->insert(client_info.client_hostname);
     columns[i++]->insert(client_info.client_name);
     columns[i++]->insert(UInt64(client_info.client_revision));
-
-    columns[i++]->insert(UInt64(client_info.http_method));
-    columns[i++]->insert(client_info.http_user_agent);
 
     columns[i++]->insert(client_info.quota_key);
 

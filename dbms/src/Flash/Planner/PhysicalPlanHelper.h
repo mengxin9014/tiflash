@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,21 +14,18 @@
 
 #pragma once
 
-#include <Interpreters/Context.h>
 #include <Interpreters/ExpressionActions.h>
 
 namespace DB::PhysicalPlanHelper
 {
-ExpressionActionsPtr newActions(const Block & input_block, const Context & context);
+ExpressionActionsPtr newActions(const Block & input_block);
 
-ExpressionActionsPtr newActions(const NamesAndTypes & input_columns, const Context & context);
+ExpressionActionsPtr newActions(const NamesAndTypes & input_columns);
 
 NamesAndTypes addSchemaProjectAction(
     const ExpressionActionsPtr & expr_actions,
     const NamesAndTypes & before_schema,
     const String & column_prefix = "");
 
-void addParentRequireProjectAction(
-    const ExpressionActionsPtr & expr_actions,
-    const Names & parent_require);
+void addParentRequireProjectAction(const ExpressionActionsPtr & expr_actions, const Names & parent_require);
 } // namespace DB::PhysicalPlanHelper

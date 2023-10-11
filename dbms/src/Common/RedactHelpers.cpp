@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ void Redact::setRedactLog(bool v)
     Redact::REDACT_LOG.store(v, std::memory_order_relaxed);
 }
 
-std::string Redact::handleToDebugString(DB::HandleID handle)
+std::string Redact::handleToDebugString(int64_t handle)
 {
     if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
         return "?";
@@ -75,4 +75,21 @@ void Redact::keyToDebugString(const char * key, const size_t size, std::ostream 
         oss << std::setw(2) << Int32(UInt8(key[i]));
     }
     oss.flags(flags); // restore flags
+}
+
+std::string Redact::hexStringToKey(const char * start, size_t len)
+{
+    std::string s;
+    if (len & 1)
+        throw DB::Exception("Invalid length: " + std::string(start, len), DB::ErrorCodes::LOGICAL_ERROR);
+
+    for (size_t i = 0; i < len; i += 2)
+    {
+        int x;
+        std::stringstream ss;
+        ss << std::hex << std::string(start + i, start + i + 2);
+        ss >> x;
+        s.push_back(x);
+    }
+    return s;
 }

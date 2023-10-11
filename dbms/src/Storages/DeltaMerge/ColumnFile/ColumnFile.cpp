@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ namespace DM
 /// ======================================================
 /// Helper methods.
 /// ======================================================
-size_t copyColumnsData(
+std::pair<size_t, size_t> copyColumnsData(
     const Columns & from,
     const ColumnPtr & pk_col,
     MutableColumns & to,
@@ -46,19 +46,20 @@ size_t copyColumnsData(
             {
                 for (size_t col_index = 0; col_index < to.size(); ++col_index)
                     to[col_index]->insertFrom(*from[col_index], rows_offset);
-                return 1;
+                return {rows_offset, 1};
             }
             else
             {
-                return 0;
+                return {rows_offset, 0};
             }
         }
         else
         {
-            auto [actual_offset, actual_limit] = RowKeyFilter::getPosRangeOfSorted(*range, pk_col, rows_offset, rows_limit);
+            auto [actual_offset, actual_limit]
+                = RowKeyFilter::getPosRangeOfSorted(*range, pk_col, rows_offset, rows_limit);
             for (size_t col_index = 0; col_index < to.size(); ++col_index)
                 to[col_index]->insertRangeFrom(*from[col_index], actual_offset, actual_limit);
-            return actual_limit;
+            return {actual_offset, actual_limit};
         }
     }
     else
@@ -73,7 +74,7 @@ size_t copyColumnsData(
             for (size_t col_index = 0; col_index < to.size(); ++col_index)
                 to[col_index]->insertRangeFrom(*from[col_index], rows_offset, rows_limit);
         }
-        return rows_limit;
+        return {rows_offset, rows_limit};
     }
 }
 

@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#RETURN
 
+#RETURN
 mysql> drop table if exists test.t
 mysql> create table test.t(a int)
 mysql> insert into test.t values(1), (20201212)
@@ -20,7 +20,7 @@ mysql> alter table test.t set tiflash replica 1
 
 func> wait_table test t
 
-mysql> set session tidb_isolation_read_engines='tiflash'; set tidb_allow_mpp=0; select * from test.t where cast(a as datetime); show warnings
+mysql> set session tidb_isolation_read_engines='tiflash'; set tidb_allow_mpp=0; set tidb_allow_tiflash_cop = ON; select * from test.t where cast(a as datetime); show warnings
 +----------+
 | a        |
 +----------+

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <Common/CapacityLimits.h>
 #include <Common/Exception.h>
 #include <Common/SimpleIntrusiveNode.h>
 #include <Common/nocopyable.h>
@@ -35,8 +36,63 @@ namespace MPMCQueueDetail
 /// every time a push/pop succeeds, it can notify next reader/writer in fifo.
 ///
 /// Double link is to support remove self from the mid of the list when timeout.
-struct WaitingNode : public SimpleIntrusiveNode<WaitingNode>
+class WaitingNode : public SimpleIntrusiveNode<WaitingNode>
 {
+public:
+    ALWAYS_INLINE void notifyNext()
+    {
+        if (next != this)
+        {
+            next->cv.notify_one();
+            next->detach(); // avoid being notified more than once
+        }
+    }
+
+    ALWAYS_INLINE void notifyAll()
+    {
+        for (auto * p = this; p->next != this; p = p->next)
+            p->next->cv.notify_one();
+    }
+
+    template <typename Pred>
+    ALWAYS_INLINE void wait(std::unique_lock<std::mutex> & lock, Pred pred)
+    {
+#ifdef __APPLE__
+        WaitingNode node;
+#else
+        thread_local WaitingNode node;
+#endif
+        while (!pred())
+        {
+            node.prependTo(this);
+            node.cv.wait(lock);
+            node.detach();
+        }
+    }
+
+    template <typename Pred>
+    ALWAYS_INLINE bool waitFor(
+        std::unique_lock<std::mutex> & lock,
+        Pred pred,
+        const std::chrono::steady_clock::time_point & deadline)
+    {
+#ifdef __APPLE__
+        WaitingNode node;
+#else
+        thread_local WaitingNode node;
+#endif
+        while (!pred())
+        {
+            node.prependTo(this);
+            auto res = node.cv.wait_until(lock, deadline);
+            node.detach();
+            if (res == std::cv_status::timeout)
+                return false;
+        }
+        return true;
+    }
+
+private:
     std::condition_variable cv;
 };
 } // namespace MPMCQueueDetail
@@ -73,17 +129,23 @@ class MPMCQueue
 public:
     using Status = MPMCQueueStatus;
     using Result = MPMCQueueResult;
+    using ElementAuxiliaryMemoryUsageFunc = std::function<Int64(const T & element)>;
 
-    explicit MPMCQueue(size_t capacity_)
-        : capacity(capacity_)
-        , data(capacity * sizeof(T))
-    {
-    }
+    MPMCQueue(
+        const CapacityLimits & capacity_limits_,
+        ElementAuxiliaryMemoryUsageFunc && get_auxiliary_memory_usage_ = [](const T &) { return 0; })
+        : capacity_limits(capacity_limits_)
+        , get_auxiliary_memory_usage(
+              capacity_limits.max_bytes == std::numeric_limits<Int64>::max()
+                  ? [](const T &) {
+                        return 0;
+                    }
+                  : std::move(get_auxiliary_memory_usage_))
+        , element_auxiliary_memory(capacity_limits.max_size, 0)
+        , data(capacity_limits.max_size * sizeof(T))
+    {}
 
-    ~MPMCQueue()
-    {
-        drain();
-    }
+    ~MPMCQueue() { drain(); }
 
     // Cannot to use copy/move constructor,
     // because MPMCQueue maybe used by different threads.
@@ -99,26 +161,19 @@ public:
     * | Finished         | No         | Pop and return OK        |
     * | Cancelled        | Yes/No     | return CANCELLED         |
     * */
-    ALWAYS_INLINE Result pop(T & obj)
-    {
-        return popObj<true>(obj);
-    }
+    ALWAYS_INLINE Result pop(T & obj) { return popObj<true>(obj); }
 
     /// Besides all conditions mentioned at `pop`, `popTimeout` will return TIMEOUT if `timeout` is exceeded.
     template <typename Duration>
     ALWAYS_INLINE Result popTimeout(T & obj, const Duration & timeout)
     {
-        /// std::condition_variable::wait_until will always use system_clock.
-        auto deadline = std::chrono::system_clock::now() + timeout;
+        auto deadline = SteadyClock::now() + timeout;
         return popObj<true>(obj, &deadline);
     }
 
     /// Non-blocking function.
     /// Besides all conditions mentioned at `pop`, `tryPop` will immediately return EMPTY if queue is `NORMAL` but empty.
-    ALWAYS_INLINE Result tryPop(T & obj)
-    {
-        return popObj<false>(obj);
-    }
+    ALWAYS_INLINE Result tryPop(T & obj) { return popObj<false>(obj); }
 
     /*
     * | Queue Status     | Empty      | Behavior                 |
@@ -138,8 +193,7 @@ public:
     template <typename U, typename Duration>
     ALWAYS_INLINE Result pushTimeout(U && u, const Duration & timeout)
     {
-        /// std::condition_variable::wait_until will always use system_clock.
-        auto deadline = std::chrono::system_clock::now() + timeout;
+        auto deadline = SteadyClock::now() + timeout;
         return pushObj<true>(std::forward<U>(u), &deadline);
     }
 
@@ -162,8 +216,7 @@ public:
     template <typename... Args, typename Duration>
     ALWAYS_INLINE Result emplaceTimeout(Args &&... args, const Duration & timeout)
     {
-        /// std::condition_variable::wait_until will always use system_clock.
-        auto deadline = std::chrono::system_clock::now() + timeout;
+        auto deadline = SteadyClock::now() + timeout;
         return emplaceObj<true>(&deadline, std::forward<Args>(args)...);
     }
 
@@ -177,10 +230,7 @@ public:
     /// Cancel a NORMAL queue will wake up all blocking readers and writers.
     /// After `cancel()` the queue can't be pushed or popped any more.
     /// That means some objects may leave at the queue without poped.
-    bool cancel()
-    {
-        return cancelWith("");
-    }
+    bool cancel() { return cancelWith(""); }
 
     bool cancelWith(String reason)
     {
@@ -196,9 +246,7 @@ public:
     /// Return true if the previous status is NORMAL.
     bool finish()
     {
-        return changeStatus([&] {
-            status = Status::FINISHED;
-        });
+        return changeStatus([&] { status = Status::FINISHED; });
     }
 
     Status getStatus() const
@@ -222,67 +270,39 @@ public:
     }
 
 private:
-    using TimePoint = std::chrono::time_point<std::chrono::system_clock>;
+    using SteadyClock = std::chrono::steady_clock;
+    using TimePoint = SteadyClock::time_point;
     using WaitingNode = MPMCQueueDetail::WaitingNode;
 
     void notifyAll()
     {
-        for (auto * p = &reader_head; p->next != &reader_head; p = p->next)
-            p->next->cv.notify_one();
-        for (auto * p = &writer_head; p->next != &writer_head; p = p->next)
-            p->next->cv.notify_one();
+        reader_head.notifyAll();
+        writer_head.notifyAll();
     }
 
     template <typename Pred>
     ALWAYS_INLINE bool wait(
         std::unique_lock<std::mutex> & lock,
         WaitingNode & head,
-        WaitingNode & node,
         Pred pred,
         const TimePoint * deadline)
     {
         if (deadline)
         {
-            while (!pred())
-            {
-                node.prependTo(&head);
-                auto res = node.cv.wait_until(lock, *deadline);
-                node.detach();
-                if (res == std::cv_status::timeout)
-                    return false;
-            }
+            return head.waitFor(lock, pred, *deadline);
         }
         else
         {
-            while (!pred())
-            {
-                node.prependTo(&head);
-                node.cv.wait(lock);
-                node.detach();
-            }
-        }
-        return true;
-    }
-
-    ALWAYS_INLINE void notifyNext(WaitingNode & head)
-    {
-        auto * next = head.next;
-        if (next != &head)
-        {
-            next->cv.notify_one();
-            next->detach(); // avoid being notified more than once
+            head.wait(lock, pred);
+            return true;
         }
     }
 
     template <bool need_wait>
     Result popObj(T & res, [[maybe_unused]] const TimePoint * deadline = nullptr)
     {
-#ifdef __APPLE__
-        WaitingNode node;
-#else
-        thread_local WaitingNode node;
-#endif
         std::unique_lock lock(mu);
+        bool is_timeout = false;
 
         if constexpr (need_wait)
         {
@@ -290,17 +310,23 @@ private:
             auto pred = [&] {
                 return read_pos < write_pos || !isNormal();
             };
-            if (!wait(lock, reader_head, node, pred, deadline))
-                return Result::TIMEOUT;
+            if (!wait(lock, reader_head, pred, deadline))
+                is_timeout = true;
         }
+        /// double check status after potential wait
         if (!isCancelled() && read_pos < write_pos)
         {
             auto & obj = getObj(read_pos);
             res = std::move(obj);
             destruct(obj);
+            updateElementAuxiliaryMemory<true>(read_pos);
 
             /// update pos only after all operations that may throw an exception.
             ++read_pos;
+            /// assert so in debug mode, we can get notified if some bugs happens when updating current_auxiliary_memory_usage
+            assert(read_pos != write_pos || current_auxiliary_memory_usage == 0);
+            if (read_pos == write_pos)
+                current_auxiliary_memory_usage = 0;
 
             /// Notify next writer within the critical area because:
             /// 1. If we remove the next writer node and notify it later,
@@ -308,8 +334,14 @@ private:
             ///    This need carefully procesing in `assignObj`.
             /// 2. If we do not remove the next writer, only obtain its pointer and notify it later,
             ///    deadlock can be possible because different readers may notify one writer.
-            notifyNext(writer_head);
+            if (current_auxiliary_memory_usage < capacity_limits.max_bytes)
+                writer_head.notifyNext();
             return Result::OK;
+        }
+        if constexpr (need_wait)
+        {
+            if (is_timeout)
+                return Result::TIMEOUT;
         }
         switch (status)
         {
@@ -325,35 +357,45 @@ private:
     template <bool need_wait, typename F>
     Result assignObj([[maybe_unused]] const TimePoint * deadline, F && assigner)
     {
-#ifdef __APPLE__
-        WaitingNode node;
-#else
-        thread_local WaitingNode node;
-#endif
         std::unique_lock lock(mu);
+        bool is_timeout = false;
 
         if constexpr (need_wait)
         {
             auto pred = [&] {
-                return write_pos - read_pos < capacity || !isNormal();
+                return (write_pos - read_pos < capacity_limits.max_size
+                        && current_auxiliary_memory_usage < capacity_limits.max_bytes)
+                    || !isNormal();
             };
-            if (!wait(lock, writer_head, node, pred, deadline))
-                return Result::TIMEOUT;
+            if (!wait(lock, writer_head, pred, deadline))
+                is_timeout = true;
         }
 
         /// double check status after potential wait
         /// check write_pos because timeouted will also reach here.
-        if (isNormal() && write_pos - read_pos < capacity)
+        if (isNormal()
+            && (write_pos - read_pos < capacity_limits.max_size
+                && current_auxiliary_memory_usage < capacity_limits.max_bytes))
         {
             void * addr = getObjAddr(write_pos);
             assigner(addr);
+            updateElementAuxiliaryMemory<false>(write_pos);
 
             /// update pos only after all operations that may throw an exception.
             ++write_pos;
 
             /// See comments in `popObj`.
-            notifyNext(reader_head);
+            reader_head.notifyNext();
+            if (capacity_limits.max_bytes != std::numeric_limits<Int64>::max()
+                && current_auxiliary_memory_usage < capacity_limits.max_bytes
+                && write_pos - read_pos < capacity_limits.max_size)
+                writer_head.notifyNext();
             return Result::OK;
+        }
+        if constexpr (need_wait)
+        {
+            if (is_timeout)
+                return Result::TIMEOUT;
         }
         switch (status)
         {
@@ -378,26 +420,17 @@ private:
         return assignObj<need_wait>(deadline, [&](void * addr) { new (addr) T(std::forward<Args>(args)...); });
     }
 
-    ALWAYS_INLINE bool isNormal() const
-    {
-        return likely(status == Status::NORMAL);
-    }
+    ALWAYS_INLINE bool isNormal() const { return likely(status == Status::NORMAL); }
 
-    ALWAYS_INLINE bool isCancelled() const
-    {
-        return unlikely(status == Status::CANCELLED);
-    }
+    ALWAYS_INLINE bool isCancelled() const { return unlikely(status == Status::CANCELLED); }
 
     ALWAYS_INLINE void * getObjAddr(Int64 pos)
     {
-        pos = (pos % capacity) * sizeof(T);
+        pos = (pos % capacity_limits.max_size) * sizeof(T);
         return &data[pos];
     }
 
-    ALWAYS_INLINE T & getObj(Int64 pos)
-    {
-        return *reinterpret_cast<T *>(getObjAddr(pos));
-    }
+    ALWAYS_INLINE T & getObj(Int64 pos) { return *reinterpret_cast<T *>(getObjAddr(pos)); }
 
     ALWAYS_INLINE void destruct(T & obj)
     {
@@ -413,6 +446,7 @@ private:
 
         read_pos = 0;
         write_pos = 0;
+        current_auxiliary_memory_usage = 0;
     }
 
     template <typename F>
@@ -428,8 +462,35 @@ private:
         return false;
     }
 
+    template <bool read>
+    ALWAYS_INLINE void updateElementAuxiliaryMemory(size_t pos)
+    {
+        if constexpr (read)
+        {
+            auto & elem_value = element_auxiliary_memory[pos % capacity_limits.max_size];
+            current_auxiliary_memory_usage -= elem_value;
+            elem_value = 0;
+        }
+        else
+        {
+            auto auxiliary_memory = get_auxiliary_memory_usage(getObj(pos));
+            current_auxiliary_memory_usage += auxiliary_memory;
+            element_auxiliary_memory[pos % capacity_limits.max_size] = auxiliary_memory;
+        }
+    }
+
 private:
-    const Int64 capacity;
+    /// capacity_limits.max_bytes is the bound of all the element's auxiliary memory
+    /// for an element stored in the queue, it will take two kinds of memory
+    /// 1. the memory took by the element itself: sizeof(T) bytes, it is a constant value and already reserved in `data`
+    /// 2. the auxiliary memory of the element, for example, if the element type is std::vector<Int64>,
+    ///    then the auxiliary memory for each element is sizeof(Int64) * element.capacity()
+    /// If the element stored in the queue has auxiliary memory usage, and the user wants to set a bound for the total
+    /// auxiliary memory usage, then the user should provide the function to calculate the auxiliary memory usage
+    /// Note: unlike capacity, capacity_limits.max_bytes is actually a soft-limit because we need to make at least
+    /// one element can be pushed to the queue even if its auxiliary memory exceeds capacity_limits.max_bytes
+    const CapacityLimits capacity_limits;
+    const ElementAuxiliaryMemoryUsageFunc get_auxiliary_memory_usage;
 
     mutable std::mutex mu;
     WaitingNode reader_head;
@@ -438,7 +499,9 @@ private:
     Int64 write_pos = 0;
     Status status = Status::NORMAL;
     String cancel_reason;
+    Int64 current_auxiliary_memory_usage = 0;
 
+    std::vector<Int64> element_auxiliary_memory;
     std::vector<UInt8> data;
 };
 

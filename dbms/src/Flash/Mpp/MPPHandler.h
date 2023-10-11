@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,12 +24,12 @@ class MPPHandler
 {
     const mpp::DispatchTaskRequest & task_request;
 
-    Poco::Logger * log;
+    LoggerPtr log;
 
 public:
-    MPPHandler(const mpp::DispatchTaskRequest & task_request_)
+    explicit MPPHandler(const mpp::DispatchTaskRequest & task_request_)
         : task_request(task_request_)
-        , log(&Poco::Logger::get("MPPHandler"))
+        , log(Logger::get())
     {}
     grpc::Status execute(const ContextPtr & context, mpp::DispatchTaskResponse * response);
     void handleError(const MPPTaskPtr & task, String error);

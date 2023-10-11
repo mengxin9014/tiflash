@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 set -ueox pipefail
 
 CMAKE_VERSION=3.22.1
-GO_VERSION="1.17"
+GO_VERSION="1.20"
 ARCH=$(uname -m)
 GO_ARCH=$([[ "$ARCH" == "aarch64" ]] && echo "arm64" || echo "amd64")
 LLVM_VERSION="13.0.0"

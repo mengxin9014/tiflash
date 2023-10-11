@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # fio test for EBS(with filesystem) write/randwrite test.
-# doc : https://docs.google.com/document/d/1NoHeigyfNyB9Bp8cYzYFv-In0dQzjR7smLltMBXCmgs
+
 if [ $# -lt 1 ]; then
     echo 'Usage: "./auto-fio.sh <path>" '
     echo '  output for test case 1: t1_{wr}_ncore{cores}_depth{iodepth}_fio.output'

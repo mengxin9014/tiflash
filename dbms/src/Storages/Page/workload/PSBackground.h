@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,6 +58,8 @@ public:
 
     void start();
 
+    void stop() { timer_status.stop(); }
+
     UInt32 getMemoryPeak() const
     {
         auto info = metrics.find(CurrentMetrics::MemoryTracking);
@@ -99,12 +101,12 @@ class PSGc
     PSPtr ps;
 
 public:
-    explicit PSGc(const PSPtr & ps_)
+    explicit PSGc(const PSPtr & ps_, uint64_t interval)
         : ps(ps_)
     {
         assert(ps != nullptr);
         gc_timer.setStartInterval(1000);
-        gc_timer.setPeriodicInterval(30 * 1000);
+        gc_timer.setPeriodicInterval(interval * 1000);
     }
 
     void doGcOnce();
@@ -113,10 +115,9 @@ public:
 
     void start();
 
-    UInt64 getElapsedMilliseconds()
-    {
-        return gc_stop_watch.elapsedMilliseconds();
-    }
+    void stop() { gc_timer.stop(); }
+
+    UInt64 getElapsedMilliseconds() { return gc_stop_watch.elapsedMilliseconds(); }
 
 private:
     Poco::Timer gc_timer;
@@ -124,12 +125,12 @@ private:
 };
 using PSGcPtr = std::shared_ptr<PSGc>;
 
-class PSScanner
+class PSSnapStatGetter
 {
     PSPtr ps;
 
 public:
-    explicit PSScanner(const PSPtr & ps_)
+    explicit PSSnapStatGetter(const PSPtr & ps_)
         : ps(ps_)
     {
         assert(ps != nullptr);
@@ -142,10 +143,12 @@ public:
 
     void start();
 
+    void stop() { scanner_timer.stop(); }
+
 private:
     Poco::Timer scanner_timer;
 };
-using PSScannerPtr = std::shared_ptr<PSScanner>;
+using PSSnapStatGetterPtr = std::shared_ptr<PSSnapStatGetter>;
 
 class StressTimeout
 {
@@ -153,12 +156,13 @@ public:
     explicit StressTimeout(size_t timeout_s)
     {
         StressEnvStatus::getInstance().setStat(STATUS_LOOP);
-        LOG_INFO(StressEnv::logger, fmt::format("Timeout: {}s", timeout_s));
+        LOG_INFO(StressEnv::logger, "Timeout: {}s", timeout_s);
         timeout_timer.setStartInterval(timeout_s * 1000);
     }
 
     void onTime(Poco::Timer & timer);
     void start();
+    void stop() { timeout_timer.stop(); }
 
 private:
     Poco::Timer timeout_timer;

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ using Version = UInt32;
 inline static constexpr Version V0 = 0;
 inline static constexpr Version V1 = 1; // Add column stats
 inline static constexpr Version V2 = 2; // Add checksum and configuration
+inline static constexpr Version V3 = 3; // Use Meta V2
 } // namespace DMFileFormat
 
 namespace StableFormat
@@ -69,6 +70,8 @@ inline static constexpr Version V2 = 2;
 // - If we already have V2 data in disk. It will turn PageStorage into MIX_MODE
 // - If we don't have any v2 data in disk. It will turn PageStorage into ONLY_V3
 inline static constexpr Version V3 = 3;
+// Store all data in one ps instance.
+inline static constexpr Version V4 = 4;
 } // namespace PageFormat
 
 struct StorageFormatVersion
@@ -118,7 +121,26 @@ inline static const StorageFormatVersion STORAGE_FORMAT_V4 = StorageFormatVersio
     .identifier = 4,
 };
 
-inline StorageFormatVersion STORAGE_FORMAT_CURRENT = STORAGE_FORMAT_V4;
+inline static const StorageFormatVersion STORAGE_FORMAT_V5 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3, // diff
+    .stable = StableFormat::V1,
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V3,
+    .identifier = 5,
+};
+
+// STORAGE_FORMAT_V100 is used for S3 only
+inline static const StorageFormatVersion STORAGE_FORMAT_V100 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V1,
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V4, // diff
+    .identifier = 100,
+};
+
+inline StorageFormatVersion STORAGE_FORMAT_CURRENT = STORAGE_FORMAT_V5;
 
 inline const StorageFormatVersion & toStorageFormat(UInt64 setting)
 {
@@ -132,6 +154,10 @@ inline const StorageFormatVersion & toStorageFormat(UInt64 setting)
         return STORAGE_FORMAT_V3;
     case 4:
         return STORAGE_FORMAT_V4;
+    case 5:
+        return STORAGE_FORMAT_V5;
+    case 100:
+        return STORAGE_FORMAT_V100;
     default:
         throw Exception("Illegal setting value: " + DB::toString(setting));
     }

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,14 +30,15 @@
 #include <IO/ReadBufferFromPocoSocket.h>
 #include <IO/WriteBufferFromPocoSocket.h>
 #include <IO/copyData.h>
+#include <Interpreters/Context.h>
 #include <Interpreters/Quota.h>
 #include <Interpreters/SharedQueries.h>
 #include <Interpreters/TablesStatus.h>
 #include <Interpreters/executeQuery.h>
 #include <Poco/Net/NetException.h>
+#include <Storages/KVStore/Read/LockException.h>
+#include <Storages/KVStore/Read/RegionException.h>
 #include <Storages/StorageMemory.h>
-#include <Storages/Transaction/LockException.h>
-#include <Storages/Transaction/RegionException.h>
 #include <common/logger_useful.h>
 
 #include <ext/scope_guard.h>
@@ -108,8 +109,7 @@ void TCPHandler::runImpl()
             sendException(e);
         }
         catch (...)
-        {
-        }
+        {}
 
         throw;
     }
@@ -120,7 +120,12 @@ void TCPHandler::runImpl()
         if (!connection_context.isDatabaseExist(default_database))
         {
             Exception e(fmt::format("Database {} doesn't exist", default_database), ErrorCodes::UNKNOWN_DATABASE);
-            LOG_WARNING(log, "Code: {}, e.displayText() = {}, Stack trace:\n\n{}", e.code(), e.displayText(), e.getStackTrace().toString());
+            LOG_WARNING(
+                log,
+                "Code: {}, e.displayText() = {}, Stack trace:\n\n{}",
+                e.code(),
+                e.displayText(),
+                e.getStackTrace().toString());
             default_database = "test";
         }
 
@@ -134,7 +139,8 @@ void TCPHandler::runImpl()
     while (true)
     {
         /// We are waiting for a packet from the client. Thus, every `POLL_INTERVAL` seconds check whether we need to shut down.
-        while (!static_cast<ReadBufferFromPocoSocket &>(*in).poll(global_settings.poll_interval * 1000000) && !server.isCancelled())
+        while (!static_cast<ReadBufferFromPocoSocket &>(*in).poll(global_settings.poll_interval * 1000000)
+               && !server.isCancelled())
             ;
 
         /// If we need to shut down, or client disconnects.
@@ -177,29 +183,7 @@ void TCPHandler::runImpl()
             state.maybe_compressed_in.reset(); /// For more accurate accounting by MemoryTracker.
 
             /// Processing Query
-            const Settings & settings = query_context.getSettingsRef();
-            if (settings.shared_query_clients && !state.query_id.empty())
-            {
-                LOG_DEBUG(log, "shared query");
-
-                state.io = query_context.getSharedQueries()->getOrCreateBlockIO(
-                    state.query_id,
-                    settings.shared_query_clients,
-                    [&]() {
-                        return executeQuery(state.query, query_context, false, state.stage);
-                    });
-
-                /// As getOrCreateBlockIO could produce exception, this line must be put after.
-                shared_query_id = state.query_id;
-
-                if (state.io.out)
-                    throw Exception("Insert query is not supported in shared query mode");
-            }
-            else
-            {
-                state.io = executeQuery(state.query, query_context, false, state.stage);
-            }
-
+            state.io = executeQuery(state.query, query_context, false, state.stage);
             if (state.io.out)
                 state.need_receive_data_for_insert = true;
 
@@ -221,7 +205,7 @@ void TCPHandler::runImpl()
         catch (LockException & e)
         {
             state.io.onException();
-            lock_info = std::move(e.lock_info);
+            lock_info = std::move(e.locks[0].second);
         }
         catch (RegionException & e)
         {
@@ -414,7 +398,8 @@ void TCPHandler::processOrdinaryQuery()
                 }
                 else
                 {
-                    if (state.progress.rows && after_send_progress.elapsed() / 1000 >= query_context.getSettingsRef().interactive_delay)
+                    if (state.progress.rows
+                        && after_send_progress.elapsed() / 1000 >= query_context.getSettingsRef().interactive_delay)
                     {
                         /// Some time passed and there is a progress.
                         after_send_progress.restart();
@@ -439,7 +424,6 @@ void TCPHandler::processOrdinaryQuery()
               */
             if (!block && !isQueryCancelled())
             {
-                sendTotals();
                 sendExtremes();
                 sendProfileInfo();
                 sendProgress();
@@ -490,28 +474,6 @@ void TCPHandler::sendProfileInfo()
     }
 }
 
-
-void TCPHandler::sendTotals()
-{
-    if (auto * input = dynamic_cast<IProfilingBlockInputStream *>(state.io.in.get()))
-    {
-        const Block & totals = input->getTotals();
-
-        if (totals)
-        {
-            initBlockOutput(totals);
-
-            writeVarUInt(Protocol::Server::Totals, *out);
-            writeStringBinary("", *out);
-
-            state.block_out->write(totals);
-            state.maybe_compressed_out->next();
-            out->next();
-        }
-    }
-}
-
-
 void TCPHandler::sendExtremes()
 {
     if (auto * input = dynamic_cast<IProfilingBlockInputStream *>(state.io.in.get()))
@@ -548,12 +510,14 @@ void TCPHandler::receiveHello()
           */
         if (packet_type == 'G' || packet_type == 'P')
         {
-            writeString("HTTP/1.0 400 Bad Request\r\n\r\n"
-                        "Port "
-                            + server.config().getString("tcp_port") + " is for clickhouse-client program.\r\n"
-                                                                      "You must use port "
-                            + server.config().getString("http_port") + " for HTTP.\r\n",
-                        *out);
+            writeString(
+                "HTTP/1.0 400 Bad Request\r\n\r\n"
+                "Port "
+                    + server.config().getString("tcp_port")
+                    + " is for clickhouse-client program.\r\n"
+                      "You must use port "
+                    + server.config().getString("http_port") + " for HTTP.\r\n",
+                *out);
 
             throw Exception("Client has connected to wrong port", ErrorCodes::CLIENT_HAS_CONNECTED_TO_WRONG_PORT);
         }
@@ -570,7 +534,12 @@ void TCPHandler::receiveHello()
     readStringBinary(password, *in);
 
     FmtBuffer fmt_buf;
-    fmt_buf.fmtAppend("Connected {} version {}.{}.{}", client_name, client_version_major, client_version_minor, client_revision);
+    fmt_buf.fmtAppend(
+        "Connected {} version {}.{}.{}",
+        client_name,
+        client_version_major,
+        client_version_minor,
+        client_revision);
     if (!default_database.empty())
         fmt_buf.fmtAppend(", database: {}", default_database);
     if (!user.empty())
@@ -612,13 +581,17 @@ bool TCPHandler::receivePacket()
     {
     case Protocol::Client::Query:
         if (!state.empty())
-            throw NetException("Unexpected packet Query received from client", ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
+            throw NetException(
+                "Unexpected packet Query received from client",
+                ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
         receiveQuery();
         return true;
 
     case Protocol::Client::Data:
         if (state.empty())
-            throw NetException("Unexpected packet Data received from client", ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
+            throw NetException(
+                "Unexpected packet Data received from client",
+                ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
         return receiveData();
 
     case Protocol::Client::Ping:
@@ -636,13 +609,17 @@ bool TCPHandler::receivePacket()
 
     case Protocol::Client::TablesStatusRequest:
         if (!state.empty())
-            throw NetException("Unexpected packet TablesStatusRequest received from client", ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
+            throw NetException(
+                "Unexpected packet TablesStatusRequest received from client",
+                ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
         processTablesStatusRequest();
         out->next();
         return false;
 
     default:
-        throw Exception(fmt::format("Unknown packet {} from client", packet_type), ErrorCodes::UNKNOWN_PACKET_FROM_CLIENT);
+        throw Exception(
+            fmt::format("Unknown packet {} from client", packet_type),
+            ErrorCodes::UNKNOWN_PACKET_FROM_CLIENT);
     }
 }
 
@@ -727,8 +704,9 @@ bool TCPHandler::receiveData()
             if (!(storage = query_context.tryGetExternalTable(external_table_name)))
             {
                 NamesAndTypesList columns = block.getNamesAndTypesList();
-                storage = StorageMemory::create(external_table_name,
-                                                ColumnsDescription{columns, NamesAndTypesList{}, NamesAndTypesList{}, ColumnDefaults{}});
+                storage = StorageMemory::create(
+                    external_table_name,
+                    ColumnsDescription{columns, NamesAndTypesList{}, NamesAndTypesList{}, ColumnDefaults{}});
                 storage->startup();
                 query_context.addExternalTable(external_table_name, storage);
             }
@@ -753,9 +731,7 @@ void TCPHandler::initBlockInput()
         else
             state.maybe_compressed_in = in;
 
-        state.block_in = std::make_shared<NativeBlockInputStream>(
-            *state.maybe_compressed_in,
-            client_revision);
+        state.block_in = std::make_shared<NativeBlockInputStream>(*state.maybe_compressed_in, client_revision);
     }
 }
 
@@ -765,9 +741,8 @@ void TCPHandler::initBlockOutput(const Block & block)
     if (!state.block_out)
     {
         if (state.compression == Protocol::Compression::Enable)
-            state.maybe_compressed_out = std::make_shared<CompressedWriteBuffer<>>(
-                *out,
-                CompressionSettings(query_context.getSettingsRef()));
+            state.maybe_compressed_out
+                = std::make_shared<CompressedWriteBuffer<>>(*out, CompressionSettings(query_context.getSettingsRef()));
         else
             state.maybe_compressed_out = out;
 
@@ -799,7 +774,9 @@ bool TCPHandler::isQueryCancelled()
         {
         case Protocol::Client::Cancel:
             if (state.empty())
-                throw NetException("Unexpected packet Cancel received from client", ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
+                throw NetException(
+                    "Unexpected packet Cancel received from client",
+                    ErrorCodes::UNEXPECTED_PACKET_FROM_CLIENT);
             LOG_INFO(log, "Query was cancelled.");
             state.is_cancelled = true;
             return true;
@@ -890,7 +867,13 @@ void TCPHandler::run()
         /// Timeout - not an error.
         if (!strcmp(e.what(), "Timeout"))
         {
-            LOG_DEBUG(log, "Poco::Exception. Code: {}, e.code() = {}, e.displayText() = {}, e.what() = {}", ErrorCodes::POCO_EXCEPTION, e.code(), e.displayText(), e.what());
+            LOG_DEBUG(
+                log,
+                "Poco::Exception. Code: {}, e.code() = {}, e.displayText() = {}, e.what() = {}",
+                ErrorCodes::POCO_EXCEPTION,
+                e.code(),
+                e.displayText(),
+                e.what());
         }
         else
             throw;

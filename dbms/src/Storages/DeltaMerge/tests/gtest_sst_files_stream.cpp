@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/SyncPoint/SyncPoint.h>
 #include <DataStreams/BlocksListBlockInputStream.h>
-#include <Storages/DeltaMerge/SSTFilesToDTFilesOutputStream.h>
+#include <Interpreters/Context.h>
+#include <Storages/DeltaMerge/Decode/SSTFilesToDTFilesOutputStream.h>
+#include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/tests/DMTestEnv.h>
+#include <Storages/KVStore/TMTContext.h>
+#include <Storages/KVStore/tests/region_helper.h>
+#include <Storages/PathPool.h>
 #include <Storages/StorageDeltaMerge.h>
-#include <Storages/Transaction/TMTContext.h>
-#include <Storages/Transaction/tests/region_helper.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
 #include <TestUtils/FunctionTestUtils.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
 #include <magic_enum.hpp>
@@ -31,8 +35,7 @@ namespace DM
 namespace tests
 {
 
-class SSTFilesToDTFilesOutputStreamTest
-    : public DB::base::TiFlashStorageTestBasic
+class SSTFilesToDTFilesOutputStreamTest : public DB::base::TiFlashStorageTestBasic
 {
 public:
     void SetUp() override
@@ -46,7 +49,7 @@ public:
     void TearDown() override
     {
         storage->drop();
-        db_context->getTMTContext().getStorages().remove(/* table id */ 100);
+        db_context->getTMTContext().getStorages().remove(NullspaceID, /* table id */ 100);
     }
 
     void setupStorage()
@@ -55,14 +58,15 @@ public:
         auto table_info = DM::tests::DMTestEnv::getMinimalTableInfo(/* table id */ 100, pk_type);
         auto astptr = DM::tests::DMTestEnv::getPrimaryKeyExpr("test_table", pk_type);
 
-        storage = StorageDeltaMerge::create("TiFlash",
-                                            "default" /* db_name */,
-                                            "test_table" /* table_name */,
-                                            table_info,
-                                            ColumnsDescription{columns},
-                                            astptr,
-                                            0,
-                                            db_context->getGlobalContext());
+        storage = StorageDeltaMerge::create(
+            "TiFlash",
+            "default" /* db_name */,
+            "test_table" /* table_name */,
+            table_info,
+            ColumnsDescription{columns},
+            astptr,
+            0,
+            db_context->getGlobalContext());
         storage->startup();
     }
 
@@ -77,7 +81,12 @@ public:
             if (start_key >= end_key)
                 break;
             auto this_block_size = std::min(static_cast<UInt64>(end_key - start_key), block_size);
-            auto block = DMTestEnv::prepareSimpleWriteBlock(start_key, start_key + static_cast<Int64>(this_block_size), false, pk_type, 2);
+            auto block = DMTestEnv::prepareSimpleWriteBlock(
+                start_key,
+                start_key + static_cast<Int64>(this_block_size),
+                false,
+                pk_type,
+                2);
             blocks.push_back(block);
             start_key += static_cast<Int64>(this_block_size);
         }
@@ -111,7 +120,7 @@ try
         ASSERT_EQ(blocks.size(), 1);
         auto block = blocks[0];
         auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-        ASSERT_COLUMN_EQ(col, createColumn<Int64>({-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4}, "col"));
+        ASSERT_COLUMN_EQ(col, createColumn<Int64>({-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4}));
     }
     {
         auto blocks = prepareBlocks(1, 14, 3);
@@ -119,27 +128,27 @@ try
         {
             auto block = blocks[0];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({1, 2, 3}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({1, 2, 3}));
         }
         {
             auto block = blocks[1];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({4, 5, 6}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({4, 5, 6}));
         }
         {
             auto block = blocks[2];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({7, 8, 9}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({7, 8, 9}));
         }
         {
             auto block = blocks[3];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({10, 11, 12}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({10, 11, 12}));
         }
         {
             auto block = blocks[4];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({13}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({13}));
         }
     }
     {
@@ -148,17 +157,17 @@ try
         {
             auto block = blocks[0];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({1}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({1}));
         }
         {
             auto block = blocks[1];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({2}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({2}));
         }
         {
             auto block = blocks[2];
             auto col = block.getByName(MutableSupport::tidb_pk_column_name);
-            ASSERT_COLUMN_EQ(col, createColumn<Int64>({3}, "col"));
+            ASSERT_COLUMN_EQ(col, createColumn<Int64>({3}));
         }
     }
 }
@@ -172,15 +181,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(100, 100, /*block_size=*/5));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 0,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -200,15 +211,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/5));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 0,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -230,15 +243,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/1000));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 1,
         /* split_after_size */ 1,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -261,15 +276,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/1));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 10,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -298,15 +315,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/20));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 10,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -331,15 +350,17 @@ try
     auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
 
     auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/20));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 10000,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -364,16 +385,18 @@ try
     auto blocks2 = prepareBlocks(130, 150, /*block_size=*/10);
     blocks1.insert(blocks1.end(), blocks2.begin(), blocks2.end());
     auto mock_stream = makeMockChild(blocks1);
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
 
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 20,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
     stream->writePrefix();
@@ -404,29 +427,133 @@ try
     auto blocks2 = prepareBlocks(0, 30, /*block_size=*/20);
     blocks1.insert(blocks1.end(), blocks2.begin(), blocks2.end());
     auto mock_stream = makeMockChild(blocks1);
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
 
     auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
         /* log_prefix */ "",
         mock_stream,
         storage,
         schema_snapshot,
-        TiDB::SnapshotApplyMethod::DTFile_Directory,
         FileConvertJobType::ApplySnapshot,
         /* split_after_rows */ 20,
         /* split_after_size */ 0,
+        0,
+        abort_flag,
         *db_context);
 
-    EXPECT_THROW({
-        stream->writePrefix();
-        stream->write();
-        stream->writeSuffix();
-    },
-                 DB::Exception);
+    EXPECT_THROW(
+        {
+            stream->writePrefix();
+            stream->write();
+            stream->writeSuffix();
+        },
+        DB::Exception);
 
     stream->cancel();
 }
 CATCH
 
+TEST_F(SSTFilesToDTFilesOutputStreamTest, Cancel)
+try
+{
+    auto table_lock = storage->lockStructureForShare("foo_query_id");
+    auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
+
+    auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/1));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
+    auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
+        /* log_prefix */ "",
+        mock_stream,
+        storage,
+        schema_snapshot,
+        FileConvertJobType::ApplySnapshot,
+        /* split_after_rows */ 10,
+        /* split_after_size */ 0,
+        0,
+        abort_flag,
+        *db_context);
+
+    stream->writePrefix();
+    stream->write();
+    stream->writeSuffix();
+    auto files = stream->outputFiles();
+    ASSERT_EQ(5, files.size());
+
+    auto delegator = storage->getAndMaybeInitStore()->path_pool->getStableDiskDelegator();
+    std::unordered_map<UInt64, String> file_id_to_path;
+    for (const auto & file : files)
+    {
+        auto parent_path = delegator.getDTFilePath(file.id);
+        auto file_path = DM::DMFile::getPathByStatus(parent_path, file.id, DM::DMFile::Status::READABLE);
+        file_id_to_path.emplace(file.id, file_path);
+        ASSERT_TRUE(Poco::File(file_path).exists());
+    }
+    stream->cancel(); // remove all data
+    for (const auto & file : files)
+    {
+        ASSERT_TRUE(delegator.getDTFilePath(file.id, /*throw_on_not_exists*/ false).empty());
+        auto file_path = file_id_to_path[file.id];
+        ASSERT_FALSE(Poco::File(file_path).exists());
+    }
+
+    // It should be empty
+    auto output_files = stream->outputFiles();
+    ASSERT_TRUE(output_files.empty());
+}
+CATCH
+
+TEST_F(SSTFilesToDTFilesOutputStreamTest, UpperLayerCancel)
+try
+{
+    auto table_lock = storage->lockStructureForShare("foo_query_id");
+    auto [schema_snapshot, unused] = storage->getSchemaSnapshotAndBlockForDecoding(table_lock, false);
+
+    auto mock_stream = makeMockChild(prepareBlocks(50, 100, /*block_size=*/1));
+    auto abort_flag = std::make_shared<std::atomic_bool>(false);
+    auto stream = std::make_shared<DM::SSTFilesToDTFilesOutputStream<DM::MockSSTFilesToDTFilesOutputStreamChildPtr>>(
+        /* log_prefix */ "",
+        mock_stream,
+        storage,
+        schema_snapshot,
+        FileConvertJobType::ApplySnapshot,
+        /* split_after_rows */ 10,
+        /* split_after_size */ 0,
+        0,
+        abort_flag,
+        *db_context);
+
+    auto sp = SyncPointCtl::enableInScope("before_SSTFilesToDTFilesOutputStream::handle_one");
+    stream->writePrefix();
+    auto t = std::thread([&]() { stream->write(); });
+    sp.waitAndPause();
+    abort_flag->store(true, std::memory_order_seq_cst);
+    sp.next();
+    sp.disable();
+    t.join();
+    stream->writeSuffix();
+    auto files = stream->outputFiles();
+    ASSERT_EQ(true, abort_flag->load(std::memory_order_seq_cst));
+    ASSERT_EQ(1, files.size());
+    auto delegator = storage->getAndMaybeInitStore()->path_pool->getStableDiskDelegator();
+    std::vector<std::string> fps;
+    for (const auto & file : files)
+    {
+        auto parent_path = delegator.getDTFilePath(file.id);
+        auto file_path = DM::DMFile::getPathByStatus(parent_path, file.id, DM::DMFile::Status::READABLE);
+        fps.push_back(file_path);
+    }
+    storage->cleanPreIngestFiles(files, db_context->getSettingsRef());
+
+    for (const auto & file : files)
+    {
+        ASSERT_TRUE(delegator.getDTFilePath(file.id, /*throw_on_not_exists*/ false).empty());
+    }
+    for (const auto & f : fps)
+    {
+        ASSERT_FALSE(Poco::File(f).exists());
+    }
+}
+CATCH
 
 } // namespace tests
 } // namespace DM

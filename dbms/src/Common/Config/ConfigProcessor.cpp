@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -83,12 +83,4 @@ ConfigProcessor::LoadedConfig ConfigProcessor::loadConfig()
     ConfigurationPtr configuration(new DB::TOMLConfiguration(config_doc));
 
     return LoadedConfig{configuration, false, config_doc};
-}
-
-void ConfigProcessor::savePreprocessedConfig(const LoadedConfig & loaded_config)
-{
-    std::ofstream out(preprocessed_path);
-    cpptoml::toml_writer writer(out);
-    loaded_config.preprocessed_conf->accept(std::move(writer));
-    out.close();
 }

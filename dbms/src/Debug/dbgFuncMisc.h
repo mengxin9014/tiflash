@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 
 namespace DB
 {
-
 class Context;
 
 // Find the last occurence of `key` in log file and extract the first number follow the key.
@@ -32,5 +31,11 @@ void dbgFuncSearchLogForKey(Context & context, const ASTs & args, DBGInvoker::Pr
 // Usage:
 //   ./storage-client.sh "DBGInvoke trigger_global_storage_pool_gc()"
 void dbgFuncTriggerGlobalPageStorageGC(Context & context, const ASTs & args, DBGInvoker::Printer output);
+
+// Wait until no active threads in dynamic thread pool finish, if timeout, return 1, else return 0
+void dbgFuncWaitUntilNoTempActiveThreadsInDynamicThreadPool(
+    Context & context,
+    const ASTs & /*args*/,
+    DBGInvoker::Printer /*output*/);
 
 } // namespace DB

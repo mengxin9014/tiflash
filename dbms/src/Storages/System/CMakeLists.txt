@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,5 +15,5 @@
 
 include(${TiFlash_SOURCE_DIR}/cmake/dbms_glob_sources.cmake)
 add_headers_and_sources(storages_system .)
-add_library(clickhouse_storages_system ${storages_system_headers} ${storages_system_sources})
-target_link_libraries(clickhouse_storages_system dbms)
+add_library(tiflash_storages_system ${storages_system_headers} ${storages_system_sources})
+target_link_libraries(tiflash_storages_system dbms)

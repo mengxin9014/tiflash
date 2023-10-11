@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 /// Suppress gcc warning: ‘*((void*)&<anonymous> +4)’ may be used uninitialized in this function
+#include <Poco/Environment.h>
 #if !__clang__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
@@ -91,7 +92,12 @@ dir=["/data0/tiflash"]
         EXPECT_EQ(all_paths[0], "/data0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
     }
 }
 CATCH
@@ -150,7 +156,12 @@ dir=["/data222/kvstore"]
         EXPECT_EQ(all_paths[0], "/data0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
     }
 }
 CATCH
@@ -200,7 +211,12 @@ dir=["/data0/tiflash"]
         EXPECT_EQ(all_paths[0], "/data0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
     }
 }
 CATCH
@@ -253,7 +269,12 @@ dir=["/data0/tiflash", "/data1/tiflash", "/data2/tiflash"]
         EXPECT_EQ(all_paths[0], "/data0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
     }
 }
 CATCH
@@ -302,7 +323,12 @@ dir=["/ssd0/tiflash"]
         EXPECT_EQ(all_paths[0], "/ssd0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
     }
 }
 CATCH
@@ -409,7 +435,8 @@ dir = [1,2,3]
 
         size_t global_capacity_quota = 0;
         TiFlashStorageConfig storage;
-        ASSERT_ANY_THROW({ std::tie(global_capacity_quota, storage) = TiFlashStorageConfig::parseSettings(*config, log); });
+        ASSERT_ANY_THROW(
+            { std::tie(global_capacity_quota, storage) = TiFlashStorageConfig::parseSettings(*config, log); });
     }
 }
 CATCH
@@ -474,7 +501,12 @@ capacity=[ 1024 ]
         EXPECT_EQ(all_paths[0], "/data0/tiflash/");
 
         // Ensure that creating PathCapacityMetrics is OK.
-        PathCapacityMetrics path_capacity(global_capacity_quota, storage.main_data_paths, storage.main_capacity_quota, storage.latest_data_paths, storage.latest_capacity_quota);
+        PathCapacityMetrics path_capacity(
+            global_capacity_quota,
+            storage.main_data_paths,
+            storage.main_capacity_quota,
+            storage.latest_data_paths,
+            storage.latest_capacity_quota);
 
         auto idx = path_capacity.locatePath("/data0/tiflash/");
         ASSERT_NE(idx, PathCapacityMetrics::INVALID_INDEX);
@@ -716,5 +748,210 @@ background_read_weight=2
     }
 }
 CATCH
+
+std::pair<String, String> getS3Env()
+{
+    return {
+        Poco::Environment::get(StorageS3Config::S3_ACCESS_KEY_ID, /*default*/ ""),
+        Poco::Environment::get(StorageS3Config::S3_SECRET_ACCESS_KEY, /*default*/ "")};
+}
+
+void setS3Env(const String & id, const String & key)
+{
+    Poco::Environment::set(StorageS3Config::S3_ACCESS_KEY_ID, id);
+    Poco::Environment::set(StorageS3Config::S3_SECRET_ACCESS_KEY, key);
+}
+
+TEST_F(StorageConfigTest, S3Config)
+try
+{
+    Strings tests = {
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.s3]
+access_key_id = "11111111"
+secret_access_key = "22222222"
+root = "root123"
+        )",
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.s3]
+endpoint = "127.0.0.1:8080"
+bucket = "s3_bucket"
+access_key_id = "33333333"
+secret_access_key = "44444444"
+root = "root123"
+        )",
+    };
+
+    // Save env variables and restore when exit.
+    auto id_key = getS3Env();
+    SCOPE_EXIT({ setS3Env(id_key.first, id_key.second); });
+
+
+    const String env_access_key_id{"abcdefgh"};
+    const String env_secret_access_key{"1234567890"};
+    setS3Env(env_access_key_id, env_secret_access_key);
+    // Env variables have been set, we except to use environment variables first.
+    for (size_t i = 0; i < tests.size(); ++i)
+    {
+        const auto & test_case = tests[i];
+        auto config = loadConfigFromString(test_case);
+        LOG_INFO(log, "parsing [index={}] [content={}]", i, test_case);
+        auto [global_capacity_quota, storage] = TiFlashStorageConfig::parseSettings(*config, log);
+        auto & s3_config = storage.s3_config;
+        ASSERT_EQ(s3_config.access_key_id, env_access_key_id);
+        ASSERT_EQ(s3_config.secret_access_key, env_secret_access_key);
+        ASSERT_EQ(s3_config.root, "root123/");
+        if (i == 0)
+        {
+            ASSERT_TRUE(s3_config.endpoint.empty());
+            ASSERT_TRUE(s3_config.bucket.empty());
+            ASSERT_FALSE(s3_config.isS3Enabled());
+        }
+        else if (i == 1)
+        {
+            ASSERT_EQ(s3_config.endpoint, "127.0.0.1:8080");
+            ASSERT_EQ(s3_config.bucket, "s3_bucket");
+            ASSERT_FALSE(s3_config.isS3Enabled());
+            s3_config.enable(/*check_requirements*/ true, log);
+            ASSERT_TRUE(s3_config.isS3Enabled());
+        }
+        else
+        {
+            throw Exception("Not support");
+        }
+    }
+
+    setS3Env("", "");
+    // Env variables have been cleared, we except to use configuration.
+    for (size_t i = 0; i < tests.size(); ++i)
+    {
+        const auto & test_case = tests[i];
+        auto config = loadConfigFromString(test_case);
+        LOG_INFO(log, "parsing [index={}] [content={}]", i, test_case);
+        auto [global_capacity_quota, storage] = TiFlashStorageConfig::parseSettings(*config, log);
+        auto & s3_config = storage.s3_config;
+        if (i == 0)
+        {
+            ASSERT_TRUE(s3_config.endpoint.empty());
+            ASSERT_TRUE(s3_config.bucket.empty());
+            ASSERT_FALSE(s3_config.isS3Enabled());
+            ASSERT_EQ(s3_config.access_key_id, "11111111");
+            ASSERT_EQ(s3_config.secret_access_key, "22222222");
+        }
+        else if (i == 1)
+        {
+            ASSERT_EQ(s3_config.endpoint, "127.0.0.1:8080");
+            ASSERT_EQ(s3_config.bucket, "s3_bucket");
+            ASSERT_FALSE(s3_config.isS3Enabled());
+            s3_config.enable(/*check_requirements*/ true, log);
+            ASSERT_TRUE(s3_config.isS3Enabled());
+            ASSERT_EQ(s3_config.access_key_id, "33333333");
+            ASSERT_EQ(s3_config.secret_access_key, "44444444");
+        }
+        else
+        {
+            throw Exception("Not support");
+        }
+    }
+}
+CATCH
+
+TEST_F(StorageConfigTest, RemoteCacheConfig)
+try
+{
+    Strings tests = {
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.remote.cache]
+dir = "/tmp/StorageConfigTest/RemoteCacheConfig/0"
+capacity = 10000000
+dtfile_level = 11
+delta_rate = 0.33
+        )",
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.remote.cache]
+dir = "/tmp/StorageConfigTest/RemoteCacheConfig/0/"
+capacity = 10000000
+dtfile_level = 11
+delta_rate = 0.33
+        )",
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.remote.cache]
+dir = "/tmp/StorageConfigTest/RemoteCacheConfig/1"
+capacity = 10000000
+dtfile_level = 101
+delta_rate = 0.33
+        )",
+        R"(
+[storage]
+[storage.main]
+dir = ["123"]
+[storage.remote.cache]
+dir = "/tmp/StorageConfigTest/RemoteCacheConfig/2"
+capacity = 10000000
+dtfile_level = 11
+delta_rate = 1.1
+        )"};
+
+    for (size_t i = 0; i < tests.size(); ++i)
+    {
+        const auto & test_case = tests[i];
+        auto config = loadConfigFromString(test_case);
+        LOG_INFO(log, "parsing [index={}] [content={}]", i, test_case);
+        size_t global_capacity_quota;
+        TiFlashStorageConfig storage;
+        try
+        {
+            std::tie(global_capacity_quota, storage) = TiFlashStorageConfig::parseSettings(*config, log);
+            if (i == 2 || i == 3)
+            {
+                FAIL() << test_case; // Parse failed, should not come here.
+            }
+        }
+        catch (...)
+        {
+            continue;
+        }
+
+        const auto & cache_config = storage.remote_cache_config;
+        if (i == 0 || i == 1)
+        {
+            auto target_dir = fmt::format("/tmp/StorageConfigTest/RemoteCacheConfig/0{}", i == 0 ? "" : "/");
+            ASSERT_EQ(cache_config.dir, target_dir);
+            ASSERT_EQ(cache_config.capacity, 10000000);
+            ASSERT_EQ(cache_config.dtfile_level, 11);
+            ASSERT_DOUBLE_EQ(cache_config.delta_rate, 0.33);
+            ASSERT_EQ(cache_config.getDTFileCacheDir(), "/tmp/StorageConfigTest/RemoteCacheConfig/0/dtfile");
+            ASSERT_EQ(cache_config.getPageCacheDir(), "/tmp/StorageConfigTest/RemoteCacheConfig/0/page");
+            ASSERT_EQ(
+                cache_config.getDTFileCapacity() + cache_config.getPageCapacity() + cache_config.getReservedCapacity(),
+                cache_config.capacity);
+            ASSERT_DOUBLE_EQ(
+                cache_config.getDTFileCapacity() * 1.0 / cache_config.capacity,
+                1.0 - cache_config.delta_rate - cache_config.reserved_rate);
+            ASSERT_TRUE(cache_config.isCacheEnabled());
+        }
+        else
+        {
+            FAIL() << i; // Should not come here.
+        }
+    }
+}
+CATCH
+
 } // namespace tests
 } // namespace DB

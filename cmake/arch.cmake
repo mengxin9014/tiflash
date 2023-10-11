@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,20 +27,4 @@ endif ()
 if ( ( ARCH_ARM AND NOT ARCH_AARCH64 ) OR ARCH_I386)
     set (ARCH_32 1)
     message (FATAL_ERROR "32bit platforms are not supported")
-endif ()
-if (CMAKE_SYSTEM MATCHES "Linux")
-    set (ARCH_LINUX 1)
-endif ()
-if (CMAKE_SYSTEM MATCHES "FreeBSD")
-    set (ARCH_FREEBSD 1)
-endif ()
-
-if (NOT MSVC)
-    set (NOT_MSVC 1)
-endif ()
-
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set (COMPILER_GCC 1)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set (COMPILER_CLANG 1)
 endif ()

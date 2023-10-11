@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -86,10 +86,7 @@ struct StringHashTableHash
         return CityHash_v1_0_2::CityHash64(reinterpret_cast<const char *>(&key), 24);
     }
 #endif
-    size_t ALWAYS_INLINE operator()(StringRef key) const
-    {
-        return StringRefHash()(key);
-    }
+    size_t ALWAYS_INLINE operator()(StringRef key) const { return StringRefHash()(key); }
 };
 
 template <typename Cell>
@@ -160,6 +157,7 @@ public:
     size_t size() const { return hasZero() ? 1 : 0; }
     bool empty() const { return !hasZero(); }
     size_t getBufferSizeInBytes() const { return sizeof(Cell); }
+    void setResizeCallback(const ResizeCallback &) {}
     size_t getCollisions() const { return 0; }
 };
 
@@ -235,16 +233,14 @@ public:
         , m2{reserve_for_num_elements / 4}
         , m3{reserve_for_num_elements / 4}
         , ms{reserve_for_num_elements / 4}
-    {
-    }
+    {}
 
     StringHashTable(StringHashTable && rhs)
         : m1(std::move(rhs.m1))
         , m2(std::move(rhs.m2))
         , m3(std::move(rhs.m3))
         , ms(std::move(rhs.ms))
-    {
-    }
+    {}
 
     ~StringHashTable() = default;
 
@@ -252,9 +248,14 @@ public:
     // 1. Always memcpy 8 times bytes
     // 2. Use switch case extension to generate fast dispatching table
     // 3. Funcs are named callables that can be force_inlined
-    // NOTE: It relies on Little Endianness
     template <typename Self, typename KeyHolder, typename Func>
-    static auto ALWAYS_INLINE dispatch(Self & self, KeyHolder && key_holder, Func && func)
+    static auto
+#if defined(ADDRESS_SANITIZER) || defined(THREAD_SANITIZER)
+        NO_INLINE NO_SANITIZE_ADDRESS NO_SANITIZE_THREAD
+#else
+        ALWAYS_INLINE
+#endif
+        dispatch(Self & self, KeyHolder && key_holder, Func && func)
     {
         StringHashTableHash hash;
         const StringRef & x = keyHolderGetKey(key_holder);
@@ -290,13 +291,19 @@ public:
             if ((reinterpret_cast<uintptr_t>(p) & 2048) == 0)
             {
                 memcpy(&n[0], p, 8);
-                n[0] &= -1ul >> s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] &= (-1ULL >> s);
+                else
+                    n[0] &= (-1ULL << s);
             }
             else
             {
                 const char * lp = x.data + x.size - 8;
                 memcpy(&n[0], lp, 8);
-                n[0] >>= s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] >>= s;
+                else
+                    n[0] <<= s;
             }
             keyHolderDiscardKey(key_holder);
             return func(self.m1, k8, hash(k8));
@@ -306,7 +313,10 @@ public:
             memcpy(&n[0], p, 8);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[1], lp, 8);
-            n[1] >>= s;
+            if constexpr (DB::isLittleEndian())
+                n[1] >>= s;
+            else
+                n[1] <<= s;
             keyHolderDiscardKey(key_holder);
             return func(self.m2, k16, hash(k16));
         }
@@ -315,7 +325,10 @@ public:
             memcpy(&n[0], p, 16);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[2], lp, 8);
-            n[2] >>= s;
+            if constexpr (DB::isLittleEndian())
+                n[2] >>= s;
+            else
+                n[2] <<= s;
             keyHolderDiscardKey(key_holder);
             return func(self.m3, k24, hash(k24));
         }
@@ -367,20 +380,11 @@ public:
         }
     };
 
-    LookupResult ALWAYS_INLINE find(const Key & x)
-    {
-        return dispatch(*this, x, FindCallable{});
-    }
+    LookupResult ALWAYS_INLINE find(const Key & x) { return dispatch(*this, x, FindCallable{}); }
 
-    ConstLookupResult ALWAYS_INLINE find(const Key & x) const
-    {
-        return dispatch(*this, x, FindCallable{});
-    }
+    ConstLookupResult ALWAYS_INLINE find(const Key & x) const { return dispatch(*this, x, FindCallable{}); }
 
-    bool ALWAYS_INLINE has(const Key & x, size_t = 0) const
-    {
-        return dispatch(*this, x, FindCallable{}) != nullptr;
-    }
+    bool ALWAYS_INLINE has(const Key & x, size_t = 0) const { return dispatch(*this, x, FindCallable{}) != nullptr; }
 
     void write(DB::WriteBuffer & wb) const
     {
@@ -432,8 +436,17 @@ public:
 
     size_t getBufferSizeInBytes() const
     {
-        return m0.getBufferSizeInBytes() + m1.getBufferSizeInBytes() + m2.getBufferSizeInBytes() + m3.getBufferSizeInBytes()
-            + ms.getBufferSizeInBytes();
+        return m0.getBufferSizeInBytes() + m1.getBufferSizeInBytes() + m2.getBufferSizeInBytes()
+            + m3.getBufferSizeInBytes() + ms.getBufferSizeInBytes();
+    }
+
+    void setResizeCallback(const ResizeCallback & resize_callback)
+    {
+        m0.setResizeCallback(resize_callback);
+        m1.setResizeCallback(resize_callback);
+        m2.setResizeCallback(resize_callback);
+        m3.setResizeCallback(resize_callback);
+        ms.setResizeCallback(resize_callback);
     }
 
     void clearAndShrink()

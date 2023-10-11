@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +21,6 @@ namespace DB::PS::V3
 class SpaceMap;
 using SpaceMapPtr = std::shared_ptr<SpaceMap>;
 /**
- * SpaceMap design doc: 
- * https://docs.google.com/document/d/1l1GoIV6Rp0GEwuYtToJMKYACmZv6jf4kp1n8JdQidS8/edit#heading=h.pff0nn7vsa6w
- * 
  * SpaceMap have red-black tree/ map implemention.
  * Each node on the tree records the information of free data blocks,
  * 
@@ -37,14 +34,13 @@ public:
     enum SpaceMapType
     {
         SMAP64_INVALID = 0,
-        SMAP64_RBTREE = 1,
+        // <-- Here used to be another type, but we removed it already.
         SMAP64_STD_MAP = 2,
     };
 
     /**
      * Create a SpaceMap that manages space address [start, end).
      *  - type : 
-     *      - SMAP64_RBTREE : red-black tree implementation
      *      - SMAP64_STD_MAP: std::map implementation
      *  - start : begin of the space
      *  - end : end if the space
@@ -114,32 +110,19 @@ public:
      * Sanity check for correctness
      */
     using CheckerFunc = std::function<bool(size_t idx, UInt64 start, UInt64 end)>;
-    virtual bool check(CheckerFunc /*checker*/, size_t /*size*/)
-    {
-        return true;
-    }
-
-    /**
-     * Log the status of space map
-     */
-    void logDebugString();
+    virtual bool check(CheckerFunc /*checker*/, size_t /*size*/) { return true; }
 
     /**
      * return the status of space map
      */
     virtual String toDebugString() = 0;
 
-    SpaceMapType getType() const
-    {
-        return type;
-    }
+    SpaceMapType getType() const { return type; }
 
     static String typeToString(SpaceMapType type)
     {
         switch (type)
         {
-        case SMAP64_RBTREE:
-            return "RB-Tree";
         case SMAP64_STD_MAP:
             return "STD Map";
         default:
@@ -174,8 +157,6 @@ public:
     /* The offset range managed by this SpaceMap. The range is [left, right). */
     UInt64 start;
     UInt64 end;
-
-    Poco::Logger * log;
 };
 
 

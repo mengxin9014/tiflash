@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,12 @@
 
 #include <Common/CurrentMetrics.h>
 #include <Common/FailPoint.h>
+#include <Common/ProfileEvents.h>
 #include <Storages/Page/V2/VersionSet/PageEntriesVersionSetWithDelta.h>
 #include <common/logger_useful.h>
 #include <common/types.h>
 
+#include <magic_enum.hpp>
 #include <stack>
 
 #ifdef FIU_ENABLE
@@ -32,6 +34,7 @@ namespace ProfileEvents
 extern const Event PSMVCCCompactOnDelta;
 extern const Event PSMVCCCompactOnDeltaRebaseRejected;
 extern const Event PSMVCCCompactOnBase;
+extern const Event PSMVCCCompactOnBaseCommit;
 extern const Event PSMVCCApplyOnCurrentBase;
 extern const Event PSMVCCApplyOnCurrentDelta;
 extern const Event PSMVCCApplyOnNewDelta;
@@ -108,12 +111,14 @@ SnapshotsStatistics PageEntriesVersionSetWithDelta::getSnapshotsStat() const
 }
 
 
-PageEntriesVersionSetWithDelta::SnapshotPtr PageEntriesVersionSetWithDelta::getSnapshot(const String & tracing_id)
+PageEntriesVersionSetWithDelta::SnapshotPtr PageEntriesVersionSetWithDelta::getSnapshot(
+    const String & tracing_id,
+    BackgroundProcessingPool::TaskHandle handle)
 {
     // acquire for unique_lock since we need to add all snapshots to link list
     std::unique_lock<std::shared_mutex> lock(read_write_mutex);
 
-    auto s = std::make_shared<Snapshot>(this, current, tracing_id);
+    auto s = std::make_shared<Snapshot>(this, current, tracing_id, handle);
     // Register a weak_ptr to snapshot into VersionSet so that we can get all living PageFiles
     // by `PageEntriesVersionSetWithDelta::listAllLiveFiles`, and it remove useless weak_ptr of snapshots.
     // Do not call `vset->removeExpiredSnapshots` inside `~Snapshot`, or it may cause incursive deadlock
@@ -132,7 +137,9 @@ void PageEntriesVersionSetWithDelta::appendVersion(VersionPtr && v, const std::u
     current = v;
 }
 
-PageEntriesVersionSetWithDelta::RebaseResult PageEntriesVersionSetWithDelta::rebase(const VersionPtr & old_base, const VersionPtr & new_base)
+PageEntriesVersionSetWithDelta::RebaseResult PageEntriesVersionSetWithDelta::rebase(
+    const VersionPtr & old_base,
+    const VersionPtr & new_base)
 {
     assert(old_base != nullptr);
     std::unique_lock lock(read_write_mutex);
@@ -165,7 +172,7 @@ std::unique_lock<std::shared_mutex> PageEntriesVersionSetWithDelta::acquireForLo
     return std::unique_lock<std::shared_mutex>(read_write_mutex);
 }
 
-bool PageEntriesVersionSetWithDelta::isValidVersion(const VersionPtr tail) const
+bool PageEntriesVersionSetWithDelta::isValidVersion(VersionPtr tail) const
 {
     for (auto node = current; node != nullptr; node = std::atomic_load(&node->prev))
     {
@@ -177,7 +184,7 @@ bool PageEntriesVersionSetWithDelta::isValidVersion(const VersionPtr tail) const
     return false;
 }
 
-void PageEntriesVersionSetWithDelta::compactOnDeltaRelease(VersionPtr tail)
+void PageEntriesVersionSetWithDelta::compactUntil(VersionPtr tail)
 {
     if (tail == nullptr || tail->isBase())
         return;
@@ -205,20 +212,27 @@ void PageEntriesVersionSetWithDelta::compactOnDeltaRelease(VersionPtr tail)
         tail = tmp;
         tmp.reset();
     }
-    // do compact on base
-    if (tail->shouldCompactToBase(config))
+
+    if (!tail->shouldCompactToBase(config))
     {
-        ProfileEvents::increment(ProfileEvents::PSMVCCCompactOnBase);
-        auto old_base = std::atomic_load(&tail->prev);
-        assert(old_base != nullptr);
-        VersionPtr new_base = PageEntriesForDelta::compactDeltaAndBase(old_base, tail);
-        // replace nodes [head, tail] -> new_base
-        if (this->rebase(tail, new_base) == RebaseResult::INVALID_VERSION)
-        {
-            // Another thread may have done compaction and rebase, then we just release `tail`. In case we may add more code after do compaction on base
-            ProfileEvents::increment(ProfileEvents::PSMVCCCompactOnDeltaRebaseRejected);
-            return;
-        }
+        return;
+    }
+
+    // do compact on base
+    ProfileEvents::increment(ProfileEvents::PSMVCCCompactOnBase);
+    auto old_base = std::atomic_load(&tail->prev);
+    assert(old_base != nullptr);
+    // create a new_base and copy the entries from `old_base` and `tail`
+    VersionPtr new_base = PageEntriesForDelta::compactDeltaAndBase(old_base, tail);
+    // replace nodes [head, tail] by new_base
+    if (this->rebase(tail, new_base) == RebaseResult::INVALID_VERSION)
+    {
+        // Another thread may have done compaction and rebase, then we just release `tail`. In case we may add more code after do compaction on base
+        ProfileEvents::increment(ProfileEvents::PSMVCCCompactOnDeltaRebaseRejected);
+    }
+    else
+    {
+        ProfileEvents::increment(ProfileEvents::PSMVCCCompactOnBaseCommit);
     }
 }
 
@@ -254,7 +268,8 @@ SnapshotsStatistics PageEntriesVersionSetWithDelta::removeExpiredSnapshots() con
                     stats.longest_living_from_thread_id = snapshot_or_invalid->create_thread;
                     stats.longest_living_from_tracing_id = snapshot_or_invalid->tracing_id;
                 }
-                valid_snapshots.emplace_back(snapshot_or_invalid); // Save valid snapshot and release them without lock later
+                valid_snapshots.emplace_back(
+                    snapshot_or_invalid); // Save valid snapshot and release them without lock later
                 iter++;
             }
         }
@@ -297,8 +312,9 @@ PageEntriesVersionSetWithDelta::gcApply( //
     return listAllLiveFiles(std::move(lock), need_scan_page_ids);
 }
 
-std::pair<std::set<PageFileIdAndLevel>, std::set<PageId>>
-PageEntriesVersionSetWithDelta::listAllLiveFiles(std::unique_lock<std::shared_mutex> && lock, bool need_scan_page_ids)
+std::pair<std::set<PageFileIdAndLevel>, std::set<PageId>> PageEntriesVersionSetWithDelta::listAllLiveFiles(
+    std::unique_lock<std::shared_mutex> && lock,
+    bool need_scan_page_ids)
 {
     constexpr const double exist_stale_snapshot = 60.0;
 
@@ -333,17 +349,20 @@ PageEntriesVersionSetWithDelta::listAllLiveFiles(std::unique_lock<std::shared_mu
             {
                 LOG_WARNING(
                     log,
-                    "Suspicious stale snapshot detected lifetime {:.3f} seconds, created from thread_id {}, tracing_id {}",
+                    "Suspicious stale snapshot detected lifetime {:.3f} seconds, created from thread_id {}, tracing_id "
+                    "{}",
                     snapshot_lifetime,
                     snapshot_or_invalid->create_thread,
                     snapshot_or_invalid->tracing_id);
             }
-            valid_snapshots.emplace_back(snapshot_or_invalid); // Save valid snapshot and release them without lock later
+            valid_snapshots.emplace_back(
+                snapshot_or_invalid); // Save valid snapshot and release them without lock later
             iter++;
         }
     }
     // Create a temporary latest snapshot by using `current`
-    valid_snapshots.emplace_back(std::make_shared<Snapshot>(this, current, ""));
+    // release this temporary snapshot won't cause version-list compact
+    valid_snapshots.emplace_back(std::make_shared<Snapshot>(this, current, "", nullptr));
 
     lock.unlock(); // Notice: unlock and we should free those valid snapshots without locking
 
@@ -353,16 +372,12 @@ PageEntriesVersionSetWithDelta::listAllLiveFiles(std::unique_lock<std::shared_mu
     if (num_invalid_snapshot_to_clean > 0)
     {
         CurrentMetrics::sub(CurrentMetrics::PSMVCCSnapshotsList, num_invalid_snapshot_to_clean);
-#define STALE_SNAPSHOT_LOG_PARAMS                          \
-    "{} gcApply remove {} invalid snapshots, "             \
-    "{} snapshots left, longest lifetime {:.3f} seconds, " \
-    "created from thread_id {}, tracing_id {}",            \
-        name,                                              \
-        num_invalid_snapshot_to_clean,                     \
-        stats.num_snapshots,                               \
-        stats.longest_living_seconds,                      \
-        stats.longest_living_from_thread_id,               \
-        stats.longest_living_from_tracing_id
+#define STALE_SNAPSHOT_LOG_PARAMS                                                               \
+    "{} gcApply remove {} invalid snapshots, "                                                  \
+    "{} snapshots left, longest lifetime {:.3f} seconds, "                                      \
+    "created from thread_id {}, tracing_id {}",                                                 \
+        name, num_invalid_snapshot_to_clean, stats.num_snapshots, stats.longest_living_seconds, \
+        stats.longest_living_from_thread_id, stats.longest_living_from_tracing_id
         if (stats.longest_living_seconds > exist_stale_snapshot)
             LOG_WARNING(log, STALE_SNAPSHOT_LOG_PARAMS);
         else
@@ -404,10 +419,11 @@ void PageEntriesVersionSetWithDelta::collectLiveFilesFromVersionList( //
 // DeltaVersionEditAcceptor
 //==========================================================================================
 
-DeltaVersionEditAcceptor::DeltaVersionEditAcceptor(const PageEntriesView * view_,
-                                                   const String & name_,
-                                                   bool ignore_invalid_ref_,
-                                                   Poco::Logger * log_)
+DeltaVersionEditAcceptor::DeltaVersionEditAcceptor(
+    const PageEntriesView * view_,
+    const String & name_,
+    bool ignore_invalid_ref_,
+    Poco::Logger * log_)
     : view(const_cast<PageEntriesView *>(view_))
     , current_version(view->getSharedTailVersion())
     , ignore_invalid_ref(ignore_invalid_ref_)
@@ -444,7 +460,13 @@ void DeltaVersionEditAcceptor::apply(PageEntriesEdit & edit)
             this->applyRef(rec);
             break;
         case WriteBatchWriteType::UPSERT:
-            throw Exception("WriteType::UPSERT should only write by gcApply!", ErrorCodes::LOGICAL_ERROR);
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "DeltaVersionEditAcceptor::apply with invalid type {}",
+                magic_enum::enum_name(rec.type));
+            break;
+        default:
+            throw Exception(fmt::format("Unknown write {}", static_cast<Int32>(rec.type)), ErrorCodes::LOGICAL_ERROR);
             break;
         }
     }
@@ -467,8 +489,9 @@ void DeltaVersionEditAcceptor::applyPut(PageEntriesEdit::EditRecord & rec)
     const auto old_entry = view->findNormalPageEntry(normal_page_id);
     if (is_ref_exist && !old_entry)
     {
-        throw DB::Exception("Accessing RefPage" + DB::toString(rec.page_id) + " to non-exist Page" + DB::toString(normal_page_id),
-                            ErrorCodes::LOGICAL_ERROR);
+        throw DB::Exception(
+            "Accessing RefPage" + DB::toString(rec.page_id) + " to non-exist Page" + DB::toString(normal_page_id),
+            ErrorCodes::LOGICAL_ERROR);
     }
 
     if (!old_entry)
@@ -542,20 +565,27 @@ void DeltaVersionEditAcceptor::applyRef(PageEntriesEdit::EditRecord & rec)
         // The Page to be ref is not exist.
         if (ignore_invalid_ref)
         {
-            LOG_WARNING(log, "{} Ignore invalid RefPage in DeltaVersionEditAcceptor::applyRef, RefPage{} to non-exist Page{}", name, rec.page_id, rec.ori_page_id);
+            LOG_WARNING(
+                log,
+                "{} Ignore invalid RefPage in DeltaVersionEditAcceptor::applyRef, RefPage{} to non-exist Page{}",
+                name,
+                rec.page_id,
+                rec.ori_page_id);
         }
         else
         {
-            throw Exception("Try to add RefPage" + DB::toString(rec.page_id) + " to non-exist Page" + DB::toString(rec.ori_page_id),
-                            ErrorCodes::LOGICAL_ERROR);
+            throw Exception(
+                "Try to add RefPage" + DB::toString(rec.page_id) + " to non-exist Page" + DB::toString(rec.ori_page_id),
+                ErrorCodes::LOGICAL_ERROR);
         }
     }
 }
 
-void DeltaVersionEditAcceptor::applyInplace(const String & name,
-                                            const PageEntriesVersionSetWithDelta::VersionPtr & current,
-                                            const PageEntriesEdit & edit,
-                                            Poco::Logger * log)
+void DeltaVersionEditAcceptor::applyInplace(
+    const String & name,
+    const PageEntriesVersionSetWithDelta::VersionPtr & current,
+    const PageEntriesEdit & edit,
+    Poco::Logger * log)
 {
     assert(current->isBase());
     assert(current.use_count() == 1);
@@ -578,11 +608,20 @@ void DeltaVersionEditAcceptor::applyInplace(const String & name,
             }
             catch (DB::Exception & e)
             {
-                LOG_WARNING(log, "{} Ignore invalid RefPage in DeltaVersionEditAcceptor::applyInplace, RefPage{} to non-exist Page{}", name, rec.page_id, rec.ori_page_id);
+                LOG_WARNING(
+                    log,
+                    "{} Ignore invalid RefPage in DeltaVersionEditAcceptor::applyInplace, RefPage{} to non-exist "
+                    "Page{}",
+                    name,
+                    rec.page_id,
+                    rec.ori_page_id);
             }
             break;
         case WriteBatchWriteType::UPSERT:
             current->upsertPage(rec.page_id, rec.entry);
+            break;
+        default:
+            throw Exception(fmt::format("Unknown write {}", static_cast<Int32>(rec.type)), ErrorCodes::LOGICAL_ERROR);
             break;
         }
     }

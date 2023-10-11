@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,20 +20,27 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 #include <kvproto/mpp.pb.h>
-#include <tipb/select.pb.h>
 #pragma GCC diagnostic pop
 
 #include <Common/ConcurrentBoundedQueue.h>
 #include <Common/Logger.h>
+#include <Core/QueryOperatorSpillContexts.h>
+#include <Core/TaskOperatorSpillContexts.h>
 #include <DataStreams/BlockIO.h>
 #include <DataStreams/IBlockInputStream.h>
+#include <Flash/Coprocessor/DAGRequest.h>
 #include <Flash/Coprocessor/FineGrainedShuffle.h>
+#include <Flash/Coprocessor/RuntimeFilterMgr.h>
 #include <Flash/Coprocessor/TablesRegionsInfo.h>
+#include <Flash/Executor/toRU.h>
 #include <Flash/Mpp/MPPTaskId.h>
 #include <Interpreters/SubqueryForSet.h>
+#include <Operators/IOProfileInfo.h>
+#include <Operators/OperatorProfileInfo.h>
 #include <Parsers/makeDummyQuery.h>
-#include <Storages/Transaction/TiDB.h>
-
+#include <Storages/DeltaMerge/Remote/DisaggTaskId.h>
+#include <Storages/DeltaMerge/ScanContext.h>
+#include <TiDB/Schema/TiDB.h>
 namespace DB
 {
 class Context;
@@ -47,17 +54,21 @@ using MPPReceiverSetPtr = std::shared_ptr<MPPReceiverSet>;
 class CoprocessorReader;
 using CoprocessorReaderPtr = std::shared_ptr<CoprocessorReader>;
 
-class Join;
-using JoinPtr = std::shared_ptr<Join>;
+class AutoSpillTrigger;
+
+struct JoinProfileInfo;
+using JoinProfileInfoPtr = std::shared_ptr<JoinProfileInfo>;
 struct JoinExecuteInfo
 {
     String build_side_root_executor_id;
-    JoinPtr join_ptr;
-    BlockInputStreams non_joined_streams;
+    JoinProfileInfoPtr join_profile_info;
     BlockInputStreams join_build_streams;
+    OperatorProfileInfos join_build_profile_infos;
 };
 
 using MPPTunnelSetPtr = std::shared_ptr<MPPTunnelSet>;
+
+class ProcessListEntry;
 
 UInt64 inline getMaxErrorCount(const tipb::DAGRequest &)
 {
@@ -119,96 +130,76 @@ constexpr UInt64 NO_ENGINE_SUBSTITUTION = 1ul << 30ul;
 constexpr UInt64 ALLOW_INVALID_DATES = 1ul << 32ul;
 } // namespace TiDBSQLMode
 
+enum class ExecutionMode
+{
+    None,
+    Stream,
+    Pipeline,
+};
+
+enum class DAGRequestKind
+{
+    Cop,
+    CopStream,
+    BatchCop,
+    MPP,
+};
+
 /// A context used to track the information that needs to be passed around during DAG planning.
 class DAGContext
 {
 public:
-    // for non-mpp(cop/batchCop)
-    explicit DAGContext(const tipb::DAGRequest & dag_request_)
-        : dag_request(&dag_request_)
-        , dummy_query_string(dag_request->DebugString())
-        , dummy_ast(makeDummyQuery())
-        , collect_execution_summaries(dag_request->has_collect_execution_summaries() && dag_request->collect_execution_summaries())
-        , is_mpp_task(false)
-        , is_root_mpp_task(false)
-        , flags(dag_request->flags())
-        , sql_mode(dag_request->sql_mode())
-        , max_recorded_error_count(getMaxErrorCount(*dag_request))
-        , warnings(max_recorded_error_count)
-        , warning_count(0)
-    {
-        assert(dag_request->has_root_executor() || dag_request->executors_size() > 0);
-        return_executor_id = dag_request->root_executor().has_executor_id() || dag_request->executors(0).has_executor_id();
-
-        initOutputInfo();
-    }
+    // for non-mpp(Cop/CopStream/BatchCop)
+    DAGContext(
+        tipb::DAGRequest & dag_request_,
+        TablesRegionsInfo && tables_regions_info_,
+        KeyspaceID keyspace_id_,
+        const String & tidb_host_,
+        DAGRequestKind cop_kind_,
+        const String & resource_group_name,
+        LoggerPtr log_);
 
     // for mpp
-    DAGContext(const tipb::DAGRequest & dag_request_, const mpp::TaskMeta & meta_, bool is_root_mpp_task_)
-        : dag_request(&dag_request_)
-        , dummy_query_string(dag_request->DebugString())
-        , dummy_ast(makeDummyQuery())
-        , collect_execution_summaries(dag_request->has_collect_execution_summaries() && dag_request->collect_execution_summaries())
-        , return_executor_id(true)
-        , is_mpp_task(true)
-        , is_root_mpp_task(is_root_mpp_task_)
-        , flags(dag_request->flags())
-        , sql_mode(dag_request->sql_mode())
-        , mpp_task_meta(meta_)
-        , mpp_task_id(mpp_task_meta.start_ts(), mpp_task_meta.task_id())
-        , max_recorded_error_count(getMaxErrorCount(*dag_request))
-        , warnings(max_recorded_error_count)
-        , warning_count(0)
-    {
-        assert(dag_request->has_root_executor() && dag_request->root_executor().has_executor_id());
-        // only mpp task has join executor.
-        initExecutorIdToJoinIdMap();
-        initOutputInfo();
-    }
+    DAGContext(tipb::DAGRequest & dag_request_, const mpp::TaskMeta & meta_, bool is_root_mpp_task_);
+
+    // for disaggregated task on write node
+    DAGContext(
+        tipb::DAGRequest & dag_request_,
+        const disaggregated::DisaggTaskMeta & task_meta_,
+        TablesRegionsInfo && tables_regions_info_,
+        const String & compute_node_host_,
+        LoggerPtr log_);
 
     // for test
-    explicit DAGContext(UInt64 max_error_count_)
-        : dag_request(nullptr)
-        , dummy_query_string("")
-        , dummy_ast(makeDummyQuery())
-        , collect_execution_summaries(false)
-        , is_mpp_task(false)
-        , is_root_mpp_task(false)
-        , flags(0)
-        , sql_mode(0)
-        , max_recorded_error_count(max_error_count_)
-        , warnings(max_recorded_error_count)
-        , warning_count(0)
-    {}
+    explicit DAGContext(UInt64 max_error_count_);
 
     // for tests need to run query tasks.
-    explicit DAGContext(const tipb::DAGRequest & dag_request_, String log_identifier, size_t concurrency)
-        : dag_request(&dag_request_)
-        , dummy_query_string(dag_request->DebugString())
-        , dummy_ast(makeDummyQuery())
-        , initialize_concurrency(concurrency)
-        , is_mpp_task(true)
-        , is_root_mpp_task(false)
-        , log(Logger::get(log_identifier))
-        , flags(dag_request->flags())
-        , sql_mode(dag_request->sql_mode())
-        , max_recorded_error_count(getMaxErrorCount(*dag_request))
-        , warnings(max_recorded_error_count)
-        , warning_count(0)
-    {
-        assert(dag_request->has_root_executor() || dag_request->executors_size() > 0);
-        return_executor_id = dag_request->root_executor().has_executor_id() || dag_request->executors(0).has_executor_id();
+    DAGContext(tipb::DAGRequest & dag_request_, String log_identifier, size_t concurrency);
 
-        initOutputInfo();
-    }
+    ~DAGContext();
 
-    void attachBlockIO(const BlockIO & io_);
     std::unordered_map<String, BlockInputStreams> & getProfileStreamsMap();
+
+    std::unordered_map<String, OperatorProfileInfos> & getOperatorProfileInfosMap();
+
+    void addOperatorProfileInfos(
+        const String & executor_id,
+        OperatorProfileInfos && profile_infos,
+        bool is_append = false);
 
     std::unordered_map<String, std::vector<String>> & getExecutorIdToJoinIdMap();
 
     std::unordered_map<String, JoinExecuteInfo> & getJoinExecuteInfoMap();
+
     std::unordered_map<String, BlockInputStreams> & getInBoundIOInputStreamsMap();
+
+    std::unordered_map<String, IOProfileInfos> & getInboundIOProfileInfosMap();
+
+    void addInboundIOProfileInfos(
+        const String & executor_id,
+        IOProfileInfos && io_profile_infos,
+        bool is_append = false);
+
     void handleTruncateError(const String & msg);
     void handleOverflowError(const String & msg, const TiFlashError & error);
     void handleDivisionByZero();
@@ -238,6 +229,18 @@ public:
             warnings_.push_back(error);
         }
     }
+    void fillWarnings(tipb::SelectResponse & response)
+    {
+        std::vector<tipb::Error> warnings_vec;
+        consumeWarnings(warnings_vec);
+        for (auto & warning : warnings_vec)
+        {
+            auto * warn = response.add_warnings();
+            // TODO: consider using allocated warnings to prevent copy?
+            warn->CopyFrom(warning);
+        }
+        response.set_warning_count(getWarningCount());
+    }
     void clearWarnings()
     {
         warnings.clear();
@@ -245,14 +248,14 @@ public:
     }
     UInt64 getWarningCount() { return warning_count; }
     const mpp::TaskMeta & getMPPTaskMeta() const { return mpp_task_meta; }
-    bool isBatchCop() const { return is_batch_cop; }
-    bool isMPPTask() const { return is_mpp_task; }
+    bool isCop() const { return kind == DAGRequestKind::Cop; }
+    bool isCopStream() const { return kind == DAGRequestKind::CopStream; }
+    bool isBatchCop() const { return kind == DAGRequestKind::BatchCop; }
+    bool isMPPTask() const { return kind == DAGRequestKind::MPP; }
     /// root mpp task means mpp task that send data back to TiDB
     bool isRootMPPTask() const { return is_root_mpp_task; }
-    const MPPTaskId & getMPPTaskId() const
-    {
-        return mpp_task_id;
-    }
+    const MPPTaskId & getMPPTaskId() const { return mpp_task_id; }
+    const std::unique_ptr<DM::DisaggTaskId> & getDisaggTaskId() const { return disaggregated_id; }
 
     std::pair<bool, double> getTableScanThroughput();
 
@@ -260,70 +263,94 @@ public:
 
     bool containsRegionsInfoForTable(Int64 table_id) const;
 
-    const BlockIO & getBlockIO() const
-    {
-        return io;
-    }
+    UInt64 getFlags() const { return flags; }
+    void setFlags(UInt64 f) { flags = f; }
+    void addFlag(UInt64 f) { flags |= f; }
+    void delFlag(UInt64 f) { flags &= (~f); }
+    bool hasFlag(UInt64 f) const { return (flags & f); }
 
-    UInt64 getFlags() const
-    {
-        return flags;
-    }
-    void setFlags(UInt64 f)
-    {
-        flags = f;
-    }
-    void addFlag(UInt64 f)
-    {
-        flags |= f;
-    }
-    void delFlag(UInt64 f)
-    {
-        flags &= (~f);
-    }
-    bool hasFlag(UInt64 f) const
-    {
-        return (flags & f);
-    }
-
-    UInt64 getSQLMode() const
-    {
-        return sql_mode;
-    }
-    void setSQLMode(UInt64 f)
-    {
-        sql_mode = f;
-    }
-    void addSQLMode(UInt64 f)
-    {
-        sql_mode |= f;
-    }
-    void delSQLMode(UInt64 f)
-    {
-        sql_mode &= (~f);
-    }
-    bool hasSQLMode(UInt64 f) const
-    {
-        return sql_mode & f;
-    }
+    UInt64 getSQLMode() const { return sql_mode; }
+    void setSQLMode(UInt64 f) { sql_mode = f; }
+    void addSQLMode(UInt64 f) { sql_mode |= f; }
+    void delSQLMode(UInt64 f) { sql_mode &= (~f); }
+    bool hasSQLMode(UInt64 f) const { return sql_mode & f; }
 
     void updateFinalConcurrency(size_t cur_streams_size, size_t streams_upper_limit);
 
     ExchangeReceiverPtr getMPPExchangeReceiver(const String & executor_id) const;
-    void setMPPReceiverSet(const MPPReceiverSetPtr & receiver_set)
-    {
-        mpp_receiver_set = receiver_set;
-    }
+    void setMPPReceiverSet(const MPPReceiverSetPtr & receiver_set) { mpp_receiver_set = receiver_set; }
     void addCoprocessorReader(const CoprocessorReaderPtr & coprocessor_reader);
     std::vector<CoprocessorReaderPtr> & getCoprocessorReaders();
+    void setDisaggregatedComputeExchangeReceiver(const String & executor_id, const ExchangeReceiverPtr & receiver)
+    {
+        disaggregated_compute_exchange_receiver = std::make_pair(executor_id, receiver);
+    }
+    std::optional<std::pair<String, ExchangeReceiverPtr>> getDisaggregatedComputeExchangeReceiver()
+    {
+        return disaggregated_compute_exchange_receiver;
+    }
+
 
     void addSubquery(const String & subquery_id, SubqueryForSet && subquery);
     bool hasSubquery() const { return !subqueries.empty(); }
     std::vector<SubqueriesForSets> && moveSubqueries() { return std::move(subqueries); }
-    void setProcessListEntry(std::shared_ptr<ProcessListEntry> entry) { process_list_entry = entry; }
+    void setProcessListEntry(const std::shared_ptr<ProcessListEntry> & entry) { process_list_entry = entry; }
     std::shared_ptr<ProcessListEntry> getProcessListEntry() const { return process_list_entry; }
+    void setQueryOperatorSpillContexts(
+        const std::shared_ptr<QueryOperatorSpillContexts> & query_operator_spill_contexts_)
+    {
+        query_operator_spill_contexts = query_operator_spill_contexts_;
+    }
+    std::shared_ptr<QueryOperatorSpillContexts> & getQueryOperatorSpillContexts()
+    {
+        return query_operator_spill_contexts;
+    }
+    void setAutoSpillTrigger(const std::shared_ptr<AutoSpillTrigger> & auto_spill_trigger_)
+    {
+        auto_spill_trigger = auto_spill_trigger_;
+    }
+    AutoSpillTrigger * getAutoSpillTrigger()
+    {
+        return auto_spill_trigger == nullptr ? nullptr : auto_spill_trigger.get();
+    }
 
-    const tipb::DAGRequest * dag_request;
+    void addTableLock(const TableLockHolder & lock) { table_locks.push_back(lock); }
+
+    KeyspaceID getKeyspaceID() const { return keyspace_id; }
+    String getResourceGroupName() { return resource_group_name; }
+    void enableResourceControl() { enable_resource_control = true; }
+    bool isResourceControlEnabled() const { return enable_resource_control; }
+
+    RU getReadRU() const;
+
+    void switchToStreamMode()
+    {
+        RUNTIME_CHECK(execution_mode == ExecutionMode::None);
+        execution_mode = ExecutionMode::Stream;
+    }
+    void switchToPipelineMode()
+    {
+        RUNTIME_CHECK(execution_mode == ExecutionMode::None);
+        execution_mode = ExecutionMode::Pipeline;
+    }
+    ExecutionMode getExecutionMode() const { return execution_mode; }
+
+    void registerOperatorSpillContext(const OperatorSpillContextPtr & operator_spill_context)
+    {
+        if (in_auto_spill_mode)
+            operator_spill_contexts->registerOperatorSpillContext(operator_spill_context);
+    }
+
+    void registerTaskOperatorSpillContexts()
+    {
+        query_operator_spill_contexts->registerTaskOperatorSpillContexts(operator_spill_contexts);
+    }
+
+    void setAutoSpillMode() { in_auto_spill_mode = true; }
+    bool isInAutoSpillMode() const { return in_auto_spill_mode; }
+
+public:
+    DAGRequest dag_request;
     /// Some existing code inherited from Clickhouse assume that each query must have a valid query string and query ast,
     /// dummy_query_string and dummy_ast is used for that
     String dummy_query_string;
@@ -335,12 +362,14 @@ public:
     Clock::time_point read_wait_index_start_timestamp{Clock::duration::zero()};
     Clock::time_point read_wait_index_end_timestamp{Clock::duration::zero()};
     String table_scan_executor_id;
+
+    // For mpp/cop/batchcop this is the host of tidb
+    // For disaggregated read, this is the host of compute node
     String tidb_host = "Unknown";
     bool collect_execution_summaries{};
-    bool return_executor_id{};
-    bool is_mpp_task = false;
-    bool is_root_mpp_task = false;
-    bool is_batch_cop = false;
+    /* const */ DAGRequestKind kind;
+    /* const */ bool is_root_mpp_task = false;
+    /* const */ bool is_disaggregated_task = false; // a disagg task handling by the write node
     // `tunnel_set` is always set by `MPPTask` and is intended to be used for `DAGQueryBlockInterpreter`.
     MPPTunnelSetPtr tunnel_set;
     TablesRegionsInfo tables_regions_info;
@@ -357,9 +386,13 @@ public:
     std::vector<tipb::FieldType> output_field_types;
     std::vector<Int32> output_offsets;
 
-    /// Hold the order of list based executors.
-    /// It is used to ensure that the order of Execution summary of list based executors is the same as the order of list based executors.
-    std::vector<String> list_based_executors_order;
+    /// executor_id, ScanContextPtr
+    /// Currently, max(scan_context_map.size()) == 1, because one mpp task only have do one table scan
+    /// While when we support collcate join later, scan_context_map.size() may > 1,
+    /// thus we need to pay attention to scan_context_map usage that time.
+    std::unordered_map<String, DM::ScanContextPtr> scan_context_map;
+
+    RuntimeFilterMgr runtime_filter_mgr;
 
 private:
     void initExecutorIdToJoinIdMap();
@@ -367,22 +400,39 @@ private:
 
 private:
     std::shared_ptr<ProcessListEntry> process_list_entry;
-    /// Hold io for correcting the destruction order.
-    BlockIO io;
+    bool in_auto_spill_mode = false;
+    std::shared_ptr<TaskOperatorSpillContexts> operator_spill_contexts;
+    std::shared_ptr<QueryOperatorSpillContexts> query_operator_spill_contexts;
+    std::shared_ptr<AutoSpillTrigger> auto_spill_trigger;
+    /// Holding the table lock to make sure that the table wouldn't be dropped during the lifetime of this query, even if there are no local regions.
+    /// TableLockHolders need to be released after the BlockInputStream is destroyed to prevent data read exceptions.
+    TableLockHolders table_locks;
+
+    /// operator profile related
+    /// operator_profile_infos will be added to map concurrently at runtime, so a lock is needed to prevent data race.
+    std::mutex operator_profile_infos_map_mu;
     /// profile_streams_map is a map that maps from executor_id to profile BlockInputStreams.
     std::unordered_map<String, BlockInputStreams> profile_streams_map;
+    /// operator_profile_infos_map is a map that maps from executor_id to OperatorProfileInfos.
+    std::unordered_map<String, OperatorProfileInfos> operator_profile_infos_map;
     /// executor_id_to_join_id_map is a map that maps executor id to all the join executor id of itself and all its children.
     std::unordered_map<String, std::vector<String>> executor_id_to_join_id_map;
     /// join_execute_info_map is a map that maps from join_probe_executor_id to JoinExecuteInfo
     /// DAGResponseWriter / JoinStatistics gets JoinExecuteInfo through it.
     std::unordered_map<std::string, JoinExecuteInfo> join_execute_info_map;
-    /// profile_streams_map is a map that maps from executor_id (table_scan / exchange_receiver) to BlockInputStreams.
+    /// inbound_io_input_streams_map is a map that maps from executor_id (table_scan / exchange_receiver) to BlockInputStreams.
     /// BlockInputStreams contains ExchangeReceiverInputStream, CoprocessorBlockInputStream and local_read_input_stream etc.
     std::unordered_map<String, BlockInputStreams> inbound_io_input_streams_map;
+    /// inbound_io_profile_infos_map is a map that maps from executor_id (table_scan / exchange_receiver) to IOProfileInfos.
+    /// IOProfileInfos are from ExchangeReceiverSourceOp, CoprocessorSourceOp and local_read_source etc.
+    std::unordered_map<String, IOProfileInfos> inbound_io_profile_infos_map;
+
     UInt64 flags;
     UInt64 sql_mode;
     mpp::TaskMeta mpp_task_meta;
     const MPPTaskId mpp_task_id = MPPTaskId::unknown_mpp_task_id;
+    // The task id for disaggregated read
+    const std::unique_ptr<DM::DisaggTaskId> disaggregated_id;
     /// max_recorded_error_count is the max error/warning need to be recorded in warnings
     UInt64 max_recorded_error_count;
     ConcurrentBoundedQueue<tipb::Error> warnings;
@@ -394,6 +444,21 @@ private:
     /// vector of SubqueriesForSets(such as join build subquery).
     /// The order of the vector is also the order of the subquery.
     std::vector<SubqueriesForSets> subqueries;
+    // In disaggregated tiflash mode, table_scan in tiflash_compute node will be converted ExchangeReceiver.
+    // Record here so we can add to receiver_set and cancel/close it.
+    std::optional<std::pair<String, ExchangeReceiverPtr>> disaggregated_compute_exchange_receiver;
+
+    // The keyspace that the DAG request from
+    const KeyspaceID keyspace_id = NullspaceID;
+
+    const String resource_group_name;
+    bool enable_resource_control = false;
+
+    // Used to determine the execution mode
+    // - None: request has not been executed yet
+    // - Stream: execute with block input stream
+    // - Pipeline: execute with pipeline model
+    ExecutionMode execution_mode = ExecutionMode::None;
 };
 
 } // namespace DB

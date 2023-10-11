@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,12 @@
 // limitations under the License.
 
 #pragma once
+
 #include <Common/TiFlashBuildInfo.h>
 #include <Common/UnifiedLogFormatter.h>
 #include <Encryption/DataKeyManager.h>
 #include <Encryption/MockKeyManager.h>
+#include <Interpreters/Context.h>
 #include <Poco/ConsoleChannel.h>
 #include <Poco/File.h>
 #include <Poco/FormattingChannel.h>
@@ -25,8 +27,8 @@
 #include <Server/CLIService.h>
 #include <Server/IServer.h>
 #include <Server/RaftConfigParser.h>
-#include <Storages/Transaction/ProxyFFI.h>
-#include <Storages/Transaction/TMTContext.h>
+#include <Storages/KVStore/FFI/ProxyFFI.h>
+#include <Storages/KVStore/TMTContext.h>
 #include <daemon/BaseDaemon.h>
 #include <pingcap/Config.h>
 
@@ -53,6 +55,7 @@ struct InspectArgs
 {
     bool check;
     bool dump_columns;
+    bool dump_all_columns;
     size_t file_id;
     std::string workdir;
 };
@@ -86,13 +89,16 @@ class ImitativeEnv
     DB::ContextPtr createImitativeContext(const std::string & workdir, bool encryption = false)
     {
         // set itself as global context
-        global_context = std::make_unique<DB::Context>(DB::Context::createGlobal());
-        global_context->setGlobalContext(*global_context);
-        global_context->setApplicationType(DB::Context::ApplicationType::SERVER);
+        global_context = DB::Context::createGlobal();
+        global_context->setApplicationType(DB::Context::ApplicationType::LOCAL);
 
         global_context->initializeTiFlashMetrics();
         KeyManagerPtr key_manager = std::make_shared<MockKeyManager>(encryption);
         global_context->initializeFileProvider(key_manager, encryption);
+
+        auto & settings = global_context->getSettingsRef();
+        global_context->initializeBackgroundPool(settings.background_pool_size.get());
+        global_context->initializeBlockableBackgroundPool(settings.background_pool_size.get());
 
         // Theses global variables should be initialized by the following order
         // 1. capacity
@@ -104,11 +110,10 @@ class ImitativeEnv
             /*main_data_paths*/ {path},
             /*latest_data_paths*/ {path},
             /*kvstore_paths*/ Strings{},
-            /*enable_raft_compatible_mode*/ true,
             global_context->getPathCapacity(),
             global_context->getFileProvider());
         TiFlashRaftConfig raft_config;
-
+        global_context->initializeGlobalStoragePoolIfNeed(global_context->getPathPool());
         raft_config.ignore_databases = {"default", "system"};
         raft_config.engine = TiDB::StorageEngine::DT;
         global_context->createTMTContext(raft_config, pingcap::ClusterConfig());
@@ -123,7 +128,7 @@ class ImitativeEnv
     static void setupLogger()
     {
         Poco::AutoPtr<Poco::ConsoleChannel> channel = new Poco::ConsoleChannel(std::cout);
-        Poco::AutoPtr<UnifiedLogFormatter> formatter(new UnifiedLogFormatter());
+        Poco::AutoPtr<Poco::Formatter> formatter(new UnifiedLogFormatter<true>());
         Poco::AutoPtr<Poco::FormattingChannel> formatting_channel(new Poco::FormattingChannel(formatter, channel));
         Poco::Logger::root().setChannel(formatting_channel);
         Poco::Logger::root().setLevel("trace");
@@ -145,10 +150,7 @@ public:
         global_context.reset();
     }
 
-    ContextPtr getContext()
-    {
-        return global_context;
-    }
+    ContextPtr getContext() { return global_context; }
 };
 } // namespace detail
 

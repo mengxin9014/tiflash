@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_
     Columns read_cols;
 
     std::scoped_lock lock(cache->mutex);
+    const auto & colid_to_offset = schema->getColIdToOffset();
     for (size_t i = col_start; i < col_end; ++i)
     {
         const auto & cd = col_defs[i];
@@ -55,13 +56,20 @@ void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_
     result.insert(result.end(), read_cols.begin(), read_cols.end());
 }
 
-ColumnFileReaderPtr
-ColumnFileInMemory::getReader(const DMContext & /*context*/, const StorageSnapshotPtr & /*storage_snap*/, const ColumnDefinesPtr & col_defs) const
+ColumnFileReaderPtr ColumnFileInMemory::getReader(
+    const DMContext &,
+    const IColumnFileDataProviderPtr &,
+    const ColumnDefinesPtr & col_defs) const
 {
     return std::make_shared<ColumnFileInMemoryReader>(*this, col_defs);
 }
 
-bool ColumnFileInMemory::append(DMContext & context, const Block & data, size_t offset, size_t limit, size_t data_bytes)
+bool ColumnFileInMemory::append(
+    const DMContext & context,
+    const Block & data,
+    size_t offset,
+    size_t limit,
+    size_t data_bytes)
 {
     if (disable_append)
         return false;
@@ -71,7 +79,8 @@ bool ColumnFileInMemory::append(DMContext & context, const Block & data, size_t 
         return false;
 
     // check whether this instance overflows
-    if (cache->block.rows() >= context.delta_cache_limit_rows || cache->block.bytes() >= context.delta_cache_limit_bytes)
+    if (cache->block.rows() >= context.delta_cache_limit_rows
+        || cache->block.bytes() >= context.delta_cache_limit_bytes)
         return false;
 
     for (size_t i = 0; i < cache->block.columns(); ++i)
@@ -111,7 +120,11 @@ ColumnPtr ColumnFileInMemoryReader::getVersionColumn()
     return cols_data_cache[1];
 }
 
-size_t ColumnFileInMemoryReader::readRows(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range)
+std::pair<size_t, size_t> ColumnFileInMemoryReader::readRows(
+    MutableColumns & output_cols,
+    size_t rows_offset,
+    size_t rows_limit,
+    const RowKeyRange * range)
 {
     memory_file.fillColumns(*col_defs, output_cols.size(), cols_data_cache);
 
@@ -130,6 +143,16 @@ Block ColumnFileInMemoryReader::readNextBlock()
     read_done = true;
 
     return genBlock(*col_defs, columns);
+}
+
+
+size_t ColumnFileInMemoryReader::skipNextBlock()
+{
+    if (read_done)
+        return 0;
+
+    read_done = true;
+    return memory_file.getRows();
 }
 
 ColumnFileReaderPtr ColumnFileInMemoryReader::createNewReader(const ColumnDefinesPtr & new_col_defs)

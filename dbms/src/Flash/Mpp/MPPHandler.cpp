@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,12 @@
 
 #include <Common/FailPoint.h>
 #include <Common/Stopwatch.h>
+#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Mpp/MPPHandler.h>
+#include <Flash/Mpp/MPPTask.h>
 #include <Flash/Mpp/Utils.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/SharedContexts/Disagg.h>
 
 #include <ext/scope_guard.h>
 
@@ -26,6 +30,27 @@ namespace FailPoints
 extern const char exception_before_mpp_non_root_task_run[];
 extern const char exception_before_mpp_root_task_run[];
 } // namespace FailPoints
+
+namespace
+{
+void addRetryRegion(const ContextPtr & context, mpp::DispatchTaskResponse * response)
+{
+    // For tiflash_compute mode, all regions are fetched from remote, so no need to refresh TiDB's region cache.
+    if (!context->getSharedContextDisagg()->isDisaggregatedComputeMode())
+    {
+        for (const auto & table_region_info : context->getDAGContext()->tables_regions_info.getTableRegionsInfoMap())
+        {
+            for (const auto & region : table_region_info.second.remote_regions)
+            {
+                auto * retry_region = response->add_retry_regions();
+                retry_region->set_id(region.region_id);
+                retry_region->mutable_region_epoch()->set_conf_ver(region.region_conf_version);
+                retry_region->mutable_region_epoch()->set_version(region.region_version);
+            }
+        }
+    }
+}
+} // namespace
 
 void MPPHandler::handleError(const MPPTaskPtr & task, String error)
 {
@@ -53,26 +78,17 @@ grpc::Status MPPHandler::execute(const ContextPtr & context, mpp::DispatchTaskRe
     {
         Stopwatch stopwatch;
         task = MPPTask::newTask(task_request.meta(), context);
-
         task->prepare(task_request);
-        for (const auto & table_region_info : context->getDAGContext()->tables_regions_info.getTableRegionsInfoMap())
-        {
-            for (const auto & region : table_region_info.second.remote_regions)
-            {
-                auto * retry_region = response->add_retry_regions();
-                retry_region->set_id(region.region_id);
-                retry_region->mutable_region_epoch()->set_conf_ver(region.region_conf_version);
-                retry_region->mutable_region_epoch()->set_version(region.region_version);
-            }
-        }
+
+        addRetryRegion(context, response);
+
+#ifndef NDEBUG
         if (task->isRootMPPTask())
-        {
             FAIL_POINT_TRIGGER_EXCEPTION(FailPoints::exception_before_mpp_root_task_run);
-        }
         else
-        {
             FAIL_POINT_TRIGGER_EXCEPTION(FailPoints::exception_before_mpp_non_root_task_run);
-        }
+#endif
+
         task->run();
         LOG_INFO(log, "processing dispatch is over; the time cost is {} ms", stopwatch.elapsedMilliseconds());
     }

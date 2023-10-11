@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,51 +14,48 @@
 
 #pragma once
 
+#include <Common/Exception.h>
+#include <Common/Logger.h>
 #include <common/logger_useful.h>
 
 #include <atomic>
-#include <chrono>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-
-
 namespace DB
 {
-template <typename T>
+template <typename K, typename T>
 struct TrivialWeightFunction
 {
-    size_t operator()(const T &) const { return 1; }
+    size_t operator()(const K &, const T &) const { return 1; }
 };
 
 
-/// Thread-safe cache that evicts entries which are not used for a long time or are expired.
+/// Thread-safe cache that evicts entries which are not used for a long time.
 /// WeightFunction is a functor that takes Mapped as a parameter and returns "weight" (approximate size)
 /// of that value.
-/// Cache starts to evict entries when their total weight exceeds max_size and when expiration time of these
-/// entries is due.
+/// Cache starts to evict entries when their total weight exceeds max_size.
 /// Value weight should not change after insertion.
-template <typename TKey,
-          typename TMapped,
-          typename HashFunction = std::hash<TKey>,
-          typename WeightFunction = TrivialWeightFunction<TMapped>>
+template <
+    typename TKey,
+    typename TMapped,
+    typename HashFunction = std::hash<TKey>,
+    typename WeightFunction = TrivialWeightFunction<TKey, TMapped>>
 class LRUCache
 {
 public:
     using Key = TKey;
     using Mapped = TMapped;
     using MappedPtr = std::shared_ptr<Mapped>;
-    using Delay = std::chrono::seconds;
-
-private:
-    using Clock = std::chrono::steady_clock;
-    using Timestamp = Clock::time_point;
 
 public:
-    explicit LRUCache(size_t max_size_, const Delay & expiration_delay_ = Delay::zero())
-        : max_size(std::max(static_cast<size_t>(1), max_size_))
-        , expiration_delay(expiration_delay_)
+    /** Initialize LRUCache with max_weight and max_elements_size.
+      * max_elements_size == 0 means no elements size restrictions.
+      */
+    explicit LRUCache(size_t max_weight_, size_t max_elements_size_ = 0)
+        : max_weight(std::max(static_cast<size_t>(1), max_weight_))
+        , max_elements_size(max_elements_size_)
     {}
 
     MappedPtr get(const Key & key)
@@ -85,7 +82,7 @@ public:
     /// produce it, saves the result in the cache and returns it.
     /// Only one of several concurrent threads calling getOrSet() will call load_func(),
     /// others will wait for that call to complete and will use its result (this helps prevent cache stampede).
-    /// Exceptions occuring in load_func will be propagated to the caller. Another thread from the
+    /// Exceptions occurring in load_func will be propagated to the caller. Another thread from the
     /// set of concurrent threads will then try to call its load_func etc.
     ///
     /// Returns std::pair of the cached value and a bool indicating whether the value was produced during this call.
@@ -130,14 +127,18 @@ public:
 
         /// Insert the new value only if the token is still in present in insert_tokens.
         /// (The token may be absent because of a concurrent reset() call).
+        bool result = false;
         auto token_it = insert_tokens.find(key);
         if (token_it != insert_tokens.end() && token_it->second.get() == token)
+        {
             setImpl(key, token->value, cache_lock);
+            result = true;
+        }
 
         if (!token->cleaned_up)
             token_holder.cleanup(token_lock, cache_lock);
 
-        return std::make_pair(token->value, true);
+        return std::make_pair(token->value, result);
     }
 
     void remove(const Key & key)
@@ -148,6 +149,7 @@ public:
             return;
 
         Cell & cell = it->second;
+        current_weight -= cell.size;
         queue.erase(cell.queue_iterator);
         cells.erase(it);
     }
@@ -162,7 +164,7 @@ public:
     size_t weight() const
     {
         std::lock_guard cache_lock(mutex);
-        return current_size;
+        return current_weight;
     }
 
     size_t count() const
@@ -177,7 +179,7 @@ public:
         queue.clear();
         cells.clear();
         insert_tokens.clear();
-        current_size = 0;
+        current_weight = 0;
         hits = 0;
         misses = 0;
     }
@@ -223,7 +225,9 @@ private:
             ++token->refcount;
         }
 
-        void cleanup([[maybe_unused]] std::lock_guard<std::mutex> & token_lock, [[maybe_unused]] std::lock_guard<std::mutex> & cache_lock)
+        void cleanup(
+            [[maybe_unused]] std::lock_guard<std::mutex> & token_lock,
+            [[maybe_unused]] std::lock_guard<std::mutex> & cache_lock)
         {
             token->cache.insert_tokens.erase(*key);
             token->cleaned_up = true;
@@ -258,16 +262,9 @@ private:
 
     struct Cell
     {
-        bool expired(const Timestamp & last_timestamp, const Delay & expiration_delay) const
-        {
-            return (expiration_delay == Delay::zero())
-                || ((last_timestamp > timestamp) && ((last_timestamp - timestamp) > expiration_delay));
-        }
-
         MappedPtr value;
-        size_t size;
+        size_t size = 0;
         LRUQueueIterator queue_iterator;
-        Timestamp timestamp;
     };
 
     using Cells = std::unordered_map<Key, Cell, HashFunction>;
@@ -278,16 +275,17 @@ private:
     Cells cells;
 
     /// Total weight of values.
-    size_t current_size = 0;
-    const size_t max_size;
-    const Delay expiration_delay;
+    size_t current_weight = 0;
+    const size_t max_weight;
+    const size_t max_elements_size;
 
     mutable std::mutex mutex;
     std::atomic<size_t> hits{0};
     std::atomic<size_t> misses{0};
 
-    WeightFunction weight_function;
+    const WeightFunction weight_function;
 
+private:
     MappedPtr getImpl(const Key & key, [[maybe_unused]] std::lock_guard<std::mutex> & cache_lock)
     {
         auto it = cells.find(key);
@@ -297,8 +295,6 @@ private:
         }
 
         Cell & cell = it->second;
-        updateCellTimestamp(cell);
-
         /// Move the key to the end of the queue. The iterator remains valid.
         queue.splice(queue.end(), queue, cell.queue_iterator);
 
@@ -307,71 +303,52 @@ private:
 
     void setImpl(const Key & key, const MappedPtr & mapped, [[maybe_unused]] std::lock_guard<std::mutex> & cache_lock)
     {
-        auto res = cells.emplace(std::piecewise_construct, std::forward_as_tuple(key), std::forward_as_tuple());
+        auto [it, inserted]
+            = cells.emplace(std::piecewise_construct, std::forward_as_tuple(key), std::forward_as_tuple());
 
-        Cell & cell = res.first->second;
-        bool inserted = res.second;
-
+        Cell & cell = it->second;
         if (inserted)
         {
             try
             {
                 cell.queue_iterator = queue.insert(queue.end(), key);
             }
-            catch (std::exception & e)
-            {
-                // If queue.insert() throws exception, cells and queue will be in inconsistent.
-                cells.erase(res.first);
-                LOG_ERROR(Logger::get("LRUCache"), "queue.insert throw std::exception: {}", e.what());
-                throw;
-            }
             catch (...)
             {
-                cells.erase(res.first);
-                LOG_ERROR(Logger::get("LRUCache"), "queue.insert throw unknown exception");
+                // If queue.insert() throws exception, cells and queue will be in inconsistent.
+                cells.erase(it);
+                tryLogCurrentException(Logger::get(), "queue.insert throw exception");
                 throw;
             }
         }
         else
         {
-            current_size -= cell.size;
+            current_weight -= cell.size;
             queue.splice(queue.end(), queue, cell.queue_iterator);
         }
 
         cell.value = mapped;
-        cell.size = cell.value ? weight_function(*cell.value) : 0;
-        current_size += cell.size;
-        updateCellTimestamp(cell);
+        cell.size = cell.value ? weight_function(key, *cell.value) : 0;
+        current_weight += cell.size;
 
-        removeOverflow(cell.timestamp);
+        removeOverflow();
     }
 
-    void updateCellTimestamp(Cell & cell)
-    {
-        if (expiration_delay != Delay::zero())
-            cell.timestamp = Clock::now();
-    }
-
-    void removeOverflow(const Timestamp & last_timestamp)
+    void removeOverflow()
     {
         size_t current_weight_lost = 0;
         size_t queue_size = cells.size();
-        while ((current_size > max_size) && (queue_size > 1))
+
+        while ((current_weight > max_weight || (max_elements_size != 0 && queue_size > max_elements_size))
+               && (queue_size > 1))
         {
             const Key & key = queue.front();
 
             auto it = cells.find(key);
-            if (it == cells.end())
-            {
-                LOG_ERROR(Logger::get("LRUCache"), "LRUCache became inconsistent. There must be a bug in it.");
-                abort();
-            }
+            RUNTIME_ASSERT(it != cells.end(), "LRUCache became inconsistent. There must be a bug in it.");
 
             const auto & cell = it->second;
-            if (!cell.expired(last_timestamp, expiration_delay))
-                break;
-
-            current_size -= cell.size;
+            current_weight -= cell.size;
             current_weight_lost += cell.size;
 
             cells.erase(it);
@@ -381,11 +358,8 @@ private:
 
         onRemoveOverflowWeightLoss(current_weight_lost);
 
-        if (current_size > (1ull << 63))
-        {
-            LOG_ERROR(Logger::get("LRUCache"), "LRUCache became inconsistent. There must be a bug in it.");
-            abort();
-        }
+        // check for underflow
+        RUNTIME_ASSERT(current_weight < (1ull << 63), "LRUCache became inconsistent. There must be a bug in it.");
     }
 
     /// Override this method if you want to track how much weight was lost in removeOverflow method.

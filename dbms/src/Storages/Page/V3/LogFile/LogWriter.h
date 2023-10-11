@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -79,29 +79,32 @@ public:
         const FileProviderPtr & file_provider_,
         Format::LogNumberType log_number_,
         bool recycle_log_files_,
-        bool manual_flush_ = false);
+        bool manual_sync_ = false);
 
     DISALLOW_COPY(LogWriter);
 
     ~LogWriter();
 
-    void addRecord(ReadBuffer & payload, size_t payload_size, const WriteLimiterPtr & write_limiter = nullptr, bool background = false);
+    void addRecord(
+        ReadBuffer & payload,
+        size_t payload_size,
+        const WriteLimiterPtr & write_limiter = nullptr,
+        bool background = false);
 
-    void flush(const WriteLimiterPtr & write_limiter = nullptr, bool background = false);
+    void sync();
 
     void close();
 
     size_t writtenBytes() const;
 
-    Format::LogNumberType logNumber() const
-    {
-        return log_number;
-    }
+    Format::LogNumberType logNumber() const { return log_number; }
 
 private:
     void emitPhysicalRecord(Format::RecordType type, ReadBuffer & payload, size_t length);
 
     void resetBuffer();
+
+    void flush(const WriteLimiterPtr & write_limiter = nullptr, bool background = false);
 
 private:
     String path;
@@ -112,9 +115,8 @@ private:
     size_t block_offset; // Current offset in block
     Format::LogNumberType log_number;
     const bool recycle_log_files;
-    // If true, it does not flush after each write. Instead it relies on the upper
-    // layer to manually does the flush by calling ::flush()
-    const bool manual_flush;
+    // If true, the upper layer need manually sync the log file after write by calling LogWriter::sync()
+    const bool manual_sync;
 
     size_t written_bytes = 0;
 

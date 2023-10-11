@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
 
 namespace Poco
 {
-class Logger;
 namespace Util
 {
 class LayeredConfiguration;
@@ -33,10 +32,13 @@ class LayeredConfiguration;
 
 namespace DB
 {
+class Logger;
+using LoggerPtr = std::shared_ptr<Logger>;
 namespace tests
 {
 class CPUAffinityManagerTest_CPUAffinityManager_Test;
-}
+} // namespace tests
+
 struct CPUAffinityConfig
 {
     CPUAffinityConfig()
@@ -80,8 +82,7 @@ public:
 
     void bindThreadCPUAffinity() const;
 #else
-    void init(const CPUAffinityConfig &)
-    {}
+    void init(const CPUAffinityConfig &) {}
 
     void bindQueryThread(pid_t) const {}
     void bindOtherThread(pid_t) const {}
@@ -90,10 +91,7 @@ public:
     void bindSelfOtherThread() const {}
     void bindSelfGrpcThread() const {}
 
-    static std::string toString()
-    {
-        return "Not Support";
-    }
+    static std::string toString() { return "Not Support"; }
 
     void bindThreadCPUAffinity() const {}
 #endif
@@ -132,7 +130,7 @@ private:
     MAYBE_UNUSED_MEMBER int cpu_cores;
 
     std::vector<std::string> query_threads;
-    Poco::Logger * log;
+    LoggerPtr log;
 
     CPUAffinityManager();
     // Disable copy and move

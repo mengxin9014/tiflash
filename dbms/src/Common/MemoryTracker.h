@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,8 @@
 
 #include <atomic>
 
-extern std::atomic<Int64> real_rss;
+extern std::atomic<Int64> real_rss, proc_num_threads, baseline_of_query_mem_tracker;
+extern std::atomic<UInt64> proc_virt_size;
 namespace CurrentMetrics
 {
 extern const Metric MemoryTracking;
@@ -44,6 +45,8 @@ class MemoryTracker : public std::enable_shared_from_this<MemoryTracker>
     /// To test exception safety of calling code, memory tracker throws an exception on each memory allocation with specified probability.
     double fault_probability = 0;
 
+    bool is_global_root = false;
+
     /// To test the accuracy of memory track, it throws an exception when the part exceeding the tracked amount is greater than accuracy_diff_for_test.
     std::atomic<Int64> accuracy_diff_for_test{0};
 
@@ -55,14 +58,24 @@ class MemoryTracker : public std::enable_shared_from_this<MemoryTracker>
     /// You could specify custom metric to track memory usage.
     CurrentMetrics::Metric metric = CurrentMetrics::MemoryTracking;
 
+    /// Report the amount of this MemoryTracker.
+    std::optional<CurrentMetrics::Metric> amount_metric;
+
     /// This description will be used as prefix into log messages (if isn't nullptr)
-    const char * description = nullptr;
+    std::atomic<const char *> description = nullptr;
 
     /// Make constructors private to ensure all objects of this class is created by `MemoryTracker::create`.
     MemoryTracker() = default;
     explicit MemoryTracker(Int64 limit_)
         : limit(limit_)
     {}
+
+    explicit MemoryTracker(Int64 limit_, bool is_global_root)
+        : limit(limit_)
+        , is_global_root(is_global_root)
+    {}
+
+    void reportAmount();
 
 public:
     /// Using `std::shared_ptr` and `new` instread of `std::make_shared` is because `std::make_shared` cannot call private constructors.
@@ -77,6 +90,8 @@ public:
             return std::shared_ptr<MemoryTracker>(new MemoryTracker(limit));
         }
     }
+
+    static MemoryTrackerPtr createGlobalRoot() { return std::shared_ptr<MemoryTracker>(new MemoryTracker(0, true)); }
 
     ~MemoryTracker();
 
@@ -103,7 +118,10 @@ public:
       */
     void setOrRaiseLimit(Int64 value);
 
-    void setBytesThatRssLargerThanLimit(Int64 value) { bytes_rss_larger_than_limit.store(value, std::memory_order_relaxed); }
+    void setBytesThatRssLargerThanLimit(Int64 value)
+    {
+        bytes_rss_larger_than_limit.store(value, std::memory_order_relaxed);
+    }
 
     void setFaultProbability(double value) { fault_probability = value; }
 
@@ -120,6 +138,8 @@ public:
 
     /// The memory consumption could be shown in realtime via CurrentMetrics counter
     void setMetric(CurrentMetrics::Metric metric_) { metric = metric_; }
+
+    void setAmountMetric(CurrentMetrics::Metric amount_metric_) { amount_metric = amount_metric_; }
 
     void setDescription(const char * description_) { description = description_; }
 
@@ -140,6 +160,20 @@ extern __thread MemoryTracker * current_memory_tracker;
 #else
 extern thread_local MemoryTracker * current_memory_tracker;
 #endif
+
+extern std::shared_ptr<MemoryTracker> root_of_non_query_mem_trackers;
+extern std::shared_ptr<MemoryTracker> root_of_query_mem_trackers;
+
+// Initialize in `initStorageMemoryTracker`.
+// If a memory tracker of storage tasks is driven by query, it should inherit `sub_root_of_query_storage_task_mem_trackers`.
+// Since it is difficult to maintain synchronization with the root_of_query_mem_trackers, it is not inherited from root_of_query_mem_trackers.
+// sub_root_of_query_storage_task_mem_trackers
+//                  |-- fetch_pages_mem_tracker
+extern std::shared_ptr<MemoryTracker> sub_root_of_query_storage_task_mem_trackers;
+extern std::shared_ptr<MemoryTracker> fetch_pages_mem_tracker;
+extern std::shared_ptr<MemoryTracker> shared_column_data_mem_tracker;
+
+void initStorageMemoryTracker(Int64 limit, Int64 larger_than_limit);
 
 /// Convenience methods, that use current_memory_tracker if it is available.
 namespace CurrentMemoryTracker

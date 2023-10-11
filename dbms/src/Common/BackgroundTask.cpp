@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,12 @@
 #include <Common/BackgroundTask.h>
 
 #include <fstream>
+
 namespace DB
 {
-bool process_mem_usage(double & resident_set)
+namespace
+{
+bool process_mem_usage(double & resident_set, Int64 & cur_proc_num_threads, UInt64 & cur_virt_size)
 {
     resident_set = 0.0;
 
@@ -31,16 +34,14 @@ bool process_mem_usage(double & resident_set)
     std::string pid, comm, state, ppid, pgrp, session, tty_nr;
     std::string tpgid, flags, minflt, cminflt, majflt, cmajflt;
     std::string utime, stime, cutime, cstime, priority, nice;
-    std::string proc_num_threads, itrealvalue, starttime;
-    UInt64 vsize;
+    std::string itrealvalue, starttime;
 
     // the field we want
     Int64 rss;
 
-    stat_stream >> pid >> comm >> state >> ppid >> pgrp >> session >> tty_nr
-        >> tpgid >> flags >> minflt >> cminflt >> majflt >> cmajflt
-        >> utime >> stime >> cutime >> cstime >> priority >> nice
-        >> proc_num_threads >> itrealvalue >> starttime >> vsize >> rss; // don't care about the rest
+    stat_stream >> pid >> comm >> state >> ppid >> pgrp >> session >> tty_nr >> tpgid >> flags >> minflt >> cminflt
+        >> majflt >> cmajflt >> utime >> stime >> cutime >> cstime >> priority >> nice >> cur_proc_num_threads
+        >> itrealvalue >> starttime >> cur_virt_size >> rss; // don't care about the rest
 
     stat_stream.close();
 
@@ -54,41 +55,66 @@ bool isProcStatSupported()
     std::ifstream stat_stream("/proc/self/stat", std::ios_base::in);
     return stat_stream.is_open();
 }
+} // namespace
+
+std::atomic_bool CollectProcInfoBackgroundTask::is_already_begin = false;
+
+void CollectProcInfoBackgroundTask::finish()
+{
+    std::lock_guard lk(mu);
+    end_fin = true;
+    cv.notify_all();
+}
 
 void CollectProcInfoBackgroundTask::begin()
 {
-    std::unique_lock lk(mu);
-    if (!is_already_begin)
+    bool tmp = false;
+    if (is_already_begin.compare_exchange_strong(tmp, true))
     {
         if (!isProcStatSupported())
         {
-            end_fin = true;
+            finish();
             return;
         }
-        std::thread t = ThreadFactory::newThread(false, "MemTrackThread", &CollectProcInfoBackgroundTask::memCheckJob, this);
+        std::thread t
+            = ThreadFactory::newThread(false, "MemTrackThread", &CollectProcInfoBackgroundTask::memCheckJob, this);
         t.detach();
-        is_already_begin = true;
+    }
+    else
+    {
+        finish();
     }
 }
 
 void CollectProcInfoBackgroundTask::memCheckJob()
 {
-    double resident_set;
-    while (!end_syn)
+    try
     {
-        process_mem_usage(resident_set);
-        resident_set *= 1024; // unit: byte
-        real_rss = static_cast<Int64>(resident_set);
-
-        usleep(100000); // sleep 100ms
+        double resident_set;
+        Int64 cur_proc_num_threads = 1;
+        UInt64 cur_virt_size = 0;
+        while (!end_syn)
+        {
+            process_mem_usage(resident_set, cur_proc_num_threads, cur_virt_size);
+            resident_set *= 1024; // unit: byte
+            real_rss = static_cast<Int64>(resident_set);
+            proc_num_threads = cur_proc_num_threads;
+            proc_virt_size = cur_virt_size;
+            baseline_of_query_mem_tracker = root_of_query_mem_trackers->get();
+            usleep(100000); // sleep 100ms
+        }
     }
-    end_fin = true;
+    catch (...)
+    {
+        // ignore exception here.
+    }
+    finish();
 }
 
-void CollectProcInfoBackgroundTask::end()
+void CollectProcInfoBackgroundTask::end() noexcept
 {
     end_syn = true;
-    while (!end_fin)
-        usleep(1000); // Just ok since it is called only when TiFlash shutdown.
+    std::unique_lock lock(mu);
+    cv.wait(lock, [&] { return end_fin; });
 }
 } // namespace DB

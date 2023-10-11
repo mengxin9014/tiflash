@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ cmake -S "${SRCPATH}" \
   -DJEMALLOC_NARENAS=${JEMALLOC_NARENAS} \
   -Wno-dev \
   -DUSE_CCACHE=OFF \
-  -DUSE_INTERNAL_SSL_LIBRARY=OFF \
+  -DUSE_INTERNAL_SSL_LIBRARY=ON \
   -DRUN_HAVE_STD_REGEX=0 \
   -DENABLE_THINLTO=${ENABLE_THINLTO} \
   -DTHINLTO_JOBS=${NPROC} \
@@ -81,3 +81,6 @@ cmake --install . --component=tiflash-release --prefix="${INSTALL_DIR}"
 unset LD_LIBRARY_PATH
 readelf -d "${INSTALL_DIR}/tiflash"
 ldd "${INSTALL_DIR}/tiflash"
+
+# show version
+${INSTALL_DIR}/tiflash version

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/DynamicThreadPool.h>
 #include <Common/typeid_cast.h>
 #include <Debug/dbgFuncMisc.h>
 #include <Interpreters/Context.h>
@@ -29,8 +30,8 @@ inline size_t getReadTSOForLog(const String & line)
     {
         std::regex rx(R"((0|[1-9][0-9]*))");
         std::smatch m;
-        // Rely on that MPP task prefix "MPP<query:435802637197639681,task:1>"
-        auto pos = line.find("query:");
+        // Rely on that MPP task prefix "MPP<query:<query_ts:1671124209981679458, local_query_id:42578432, server_id:3340035, start_ts:438075169172357120>,task_id:42578433>"
+        auto pos = line.find(", start_ts:");
         if (pos != std::string::npos && regex_search(line.cbegin() + pos, line.cend(), m, rx))
         {
             return std::stoul(m[1]);
@@ -93,7 +94,7 @@ void dbgFuncSearchLogForKey(Context & context, const ASTs & args, DBGInvoker::Pr
         return;
     }
     String target_line;
-    for (auto iter = key_line_candidates.rbegin(); iter != key_line_candidates.rend(); iter++)
+    for (auto iter = key_line_candidates.rbegin(); iter != key_line_candidates.rend(); iter++) // NOLINT
     {
         if (getReadTSOForLog(*iter) == target_read_tso)
         {
@@ -118,7 +119,8 @@ void dbgFuncSearchLogForKey(Context & context, const ASTs & args, DBGInvoker::Pr
     }
     catch (std::exception & e)
     {
-        throw Exception(fmt::format("Parse 'RSFilter exclude rate' failed, exception: {}, target_line {}", e.what(), target_line));
+        throw Exception(
+            fmt::format("Parse 'RSFilter exclude rate' failed, exception: {}, target_line {}", e.what(), target_line));
     }
 }
 
@@ -128,6 +130,39 @@ void dbgFuncTriggerGlobalPageStorageGC(Context & context, const ASTs & /*args*/,
     if (global_storage_pool)
     {
         global_storage_pool->gc();
+    }
+}
+
+void dbgFuncWaitUntilNoTempActiveThreadsInDynamicThreadPool(Context &, const ASTs & args, DBGInvoker::Printer output)
+{
+    if (DynamicThreadPool::global_instance)
+    {
+        static const UInt64 MAX_WAIT_TIME = 10;
+        auto wait_time = safeGet<UInt64>(typeid_cast<const ASTLiteral &>(*args[0]).value);
+        wait_time = std::min(wait_time, MAX_WAIT_TIME);
+        /// should update the value when there is long running threads using dynamic thread pool
+        static const int expected_value = 0;
+
+        while (wait_time > 0)
+        {
+            if (GET_METRIC(tiflash_thread_count, type_active_threads_of_thdpool).Value() == expected_value)
+            {
+                output("0");
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            --wait_time;
+        }
+        if (GET_METRIC(tiflash_thread_count, type_active_threads_of_thdpool).Value() == expected_value)
+        {
+            output("0");
+            return;
+        }
+        output("1");
+    }
+    else
+    {
+        output("0");
     }
 }
 } // namespace DB

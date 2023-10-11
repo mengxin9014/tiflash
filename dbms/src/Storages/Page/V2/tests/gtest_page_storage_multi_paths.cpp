@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,16 +20,15 @@
 #include <Poco/Logger.h>
 #include <Poco/Path.h>
 #include <Poco/Runnable.h>
-#include <Poco/ThreadPool.h>
 #include <Poco/Timer.h>
 #include <Storages/Page/Page.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/V2/PageDefines.h>
 #include <Storages/Page/V2/PageFile.h>
 #include <Storages/Page/V2/PageStorage.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 #include <Storages/PathCapacityMetrics.h>
 #include <Storages/PathPool.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <common/logger_useful.h>
 
@@ -43,13 +42,13 @@ namespace DB::PS::V2::tests
 {
 using PSPtr = std::shared_ptr<PageStorage>;
 
-class PageStorageMultiPaths_test : public DB::base::TiFlashStorageTestBasic
+class PageStorageMultiPathsTest
+    : public DB::base::TiFlashStorageTestBasic
     , public ::testing::WithParamInterface<size_t>
 {
 public:
-    PageStorageMultiPaths_test()
-        : storage()
-        , file_provider{DB::tests::TiFlashTestEnv::getContext().getFileProvider()}
+    PageStorageMultiPathsTest()
+        : file_provider{DB::tests::TiFlashTestEnv::getDefaultFileProvider()}
     {}
 
     static void SetUpTestCase() {}
@@ -59,6 +58,7 @@ protected:
     {
         // drop dir if exists
         dropDataOnDisk(getTemporaryPath());
+        bkg_pool = std::make_shared<DB::BackgroundProcessingPool>(4, "bg-page-");
         // default test config
         config.file_roll_size = 4 * MB;
         config.gc_max_valid_rate = 0.5;
@@ -73,28 +73,36 @@ protected:
         return paths;
     }
 
-    String getParentPathForTable(const String & /*db*/, const String & table = "table")
+    static String getParentPathForTable(const String & /*db*/, const String & table = "table")
     {
         return Poco::Path{getTemporaryPath() + "/ps_multi_paths/data" + toString(0) + "/" + table + "/log"}.toString();
     }
 
 protected:
     PageStorageConfig config;
+    std::shared_ptr<BackgroundProcessingPool> bkg_pool;
     std::shared_ptr<PageStorage> storage;
     const FileProviderPtr file_provider;
 };
 
-TEST_P(PageStorageMultiPaths_test, DeltaWriteReadRestore)
+TEST_P(PageStorageMultiPathsTest, DeltaWriteReadRestore)
 try
 {
     config.file_roll_size = 128 * MB;
 
     size_t number_of_paths = GetParam();
     auto all_paths = getMultiTestPaths(number_of_paths);
-    auto capacity = std::make_shared<PathCapacityMetrics>(0, all_paths, std::vector<size_t>{}, Strings{}, std::vector<size_t>{});
-    StoragePathPool pool = PathPool(all_paths, all_paths, Strings{}, capacity, file_provider).withTable("test", "table", false);
+    auto capacity
+        = std::make_shared<PathCapacityMetrics>(0, all_paths, std::vector<size_t>{}, Strings{}, std::vector<size_t>{});
+    StoragePathPool pool
+        = PathPool(all_paths, all_paths, Strings{}, capacity, file_provider).withTable("test", "table", false);
 
-    storage = std::make_shared<PageStorage>("test.table", pool.getPSDiskDelegatorMulti("log"), config, file_provider);
+    storage = std::make_shared<PageStorage>(
+        "test.table",
+        pool.getPSDiskDelegatorMulti("log"),
+        config,
+        file_provider,
+        *bkg_pool);
     storage->restore();
 
     const UInt64 tag = 0;
@@ -132,7 +140,12 @@ try
     }
 
     // restore
-    storage = std::make_shared<PageStorage>("test.t", pool.getPSDiskDelegatorMulti("log"), config, file_provider);
+    storage = std::make_shared<PageStorage>(
+        "test.t",
+        pool.getPSDiskDelegatorMulti("log"),
+        config,
+        file_provider,
+        *bkg_pool);
     storage->restore();
 
     // Read again
@@ -188,7 +201,12 @@ try
     }
 
     // Restore. This ensure last write is correct.
-    storage = std::make_shared<PageStorage>("test.t", pool.getPSDiskDelegatorMulti("log"), config, file_provider);
+    storage = std::make_shared<PageStorage>(
+        "test.t",
+        pool.getPSDiskDelegatorMulti("log"),
+        config,
+        file_provider,
+        *bkg_pool);
     storage->restore();
 
     // Read again to check all data.
@@ -218,6 +236,6 @@ try
 }
 CATCH
 
-INSTANTIATE_TEST_CASE_P(DifferentNumberOfDeltaPaths, PageStorageMultiPaths_test, testing::Range(1UL, 7UL));
+INSTANTIATE_TEST_CASE_P(DifferentNumberOfDeltaPaths, PageStorageMultiPathsTest, testing::Range(1UL, 7UL));
 
 } // namespace DB::PS::V2::tests

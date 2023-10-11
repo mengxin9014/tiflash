@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,10 +11,24 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <Columns/ColumnNullable.h>
+#include <DataTypes/DataTypeEnum.h>
+#include <DataTypes/DataTypeNullable.h>
 #include <TestUtils/ColumnGenerator.h>
 
 namespace DB::tests
 {
+ColumnWithTypeAndName ColumnGenerator::generateNullMapColumn(const ColumnGeneratorOpts & opts)
+{
+    DataTypePtr type = DataTypeFactory::instance().get(opts.type_name);
+    assert(type != nullptr && type->getTypeId() == TypeIndex::UInt8);
+    auto col = type->createColumn();
+    col->reserve(opts.size);
+    for (size_t i = 0; i < opts.size; ++i)
+        genBool(col);
+    return {std::move(col), type, opts.name};
+}
+
 ColumnWithTypeAndName ColumnGenerator::generate(const ColumnGeneratorOpts & opts)
 {
     int_rand_gen = std::uniform_int_distribution<Int64>(0, opts.string_max_size);
@@ -24,6 +38,20 @@ ColumnWithTypeAndName ColumnGenerator::generate(const ColumnGeneratorOpts & opts
     else
         type = DataTypeFactory::instance().get(opts.type_name);
 
+    if (type->isNullable())
+    {
+        auto nested_column_generator_opts = opts;
+        nested_column_generator_opts.type_name = removeNullable(type)->getName();
+        auto null_map_column_generator_opts = opts;
+        null_map_column_generator_opts.type_name = "UInt8";
+        return {
+            ColumnNullable::create(
+                generate(nested_column_generator_opts).column,
+                generateNullMapColumn(null_map_column_generator_opts).column),
+            type,
+            opts.name};
+    }
+
     auto col = type->createColumn();
     col->reserve(opts.size);
 
@@ -32,18 +60,36 @@ ColumnWithTypeAndName ColumnGenerator::generate(const ColumnGeneratorOpts & opts
     switch (type_id)
     {
     case TypeIndex::UInt8:
+        for (size_t i = 0; i < opts.size; ++i)
+            genUInt<UInt8>(col);
+        break;
     case TypeIndex::UInt16:
+        for (size_t i = 0; i < opts.size; ++i)
+            genUInt<UInt16>(col);
+        break;
     case TypeIndex::UInt32:
+        for (size_t i = 0; i < opts.size; ++i)
+            genUInt<UInt32>(col);
+        break;
     case TypeIndex::UInt64:
         for (size_t i = 0; i < opts.size; ++i)
-            genUInt(col);
+            genUInt<UInt64>(col);
         break;
     case TypeIndex::Int8:
+        for (size_t i = 0; i < opts.size; ++i)
+            genInt<Int8>(col);
+        break;
     case TypeIndex::Int16:
+        for (size_t i = 0; i < opts.size; ++i)
+            genInt<Int16>(col);
+        break;
     case TypeIndex::Int32:
+        for (size_t i = 0; i < opts.size; ++i)
+            genInt<Int32>(col);
+        break;
     case TypeIndex::Int64:
         for (size_t i = 0; i < opts.size; ++i)
-            genInt(col);
+            genInt<Int64>(col);
         break;
     case TypeIndex::Float32:
     case TypeIndex::Float64:
@@ -69,11 +115,22 @@ ColumnWithTypeAndName ColumnGenerator::generate(const ColumnGeneratorOpts & opts
         for (size_t i = 0; i < opts.size; ++i)
             genDateTime(col);
         break;
+    case TypeIndex::MyTime:
+        for (size_t i = 0; i < opts.size; ++i)
+            genDuration(col);
+        break;
+    case TypeIndex::Enum8:
+    case TypeIndex::Enum16:
+        for (size_t i = 0; i < opts.size; ++i)
+            genEnumValue(col, type);
+        break;
+        {
+        }
     default:
         throw std::invalid_argument("RandomColumnGenerator invalid type");
     }
 
-    return {std::move(col), type};
+    return {std::move(col), type, opts.name};
 }
 
 DataTypePtr ColumnGenerator::createDecimalType()
@@ -122,10 +179,23 @@ String ColumnGenerator::randomDate()
     return fmt::format("{}-{}-{}", res.tm_year + 1900, res.tm_mon + 1, res.tm_mday);
 }
 
+String ColumnGenerator::randomDuration()
+{
+    auto res = randomLocalTime();
+    return fmt::format("{}:{}:{}", res.tm_hour, res.tm_min, res.tm_sec);
+}
+
 String ColumnGenerator::randomDateTime()
 {
     auto res = randomLocalTime();
-    return fmt::format("{}-{}-{} {}:{}:{}", res.tm_year + 1900, res.tm_mon + 1, res.tm_mday, res.tm_hour, res.tm_min, res.tm_sec);
+    return fmt::format(
+        "{}-{}-{} {}:{}:{}",
+        res.tm_year + 1900,
+        res.tm_mon + 1,
+        res.tm_mday,
+        res.tm_hour,
+        res.tm_min,
+        res.tm_sec);
 }
 
 String ColumnGenerator::randomDecimal(uint64_t prec, uint64_t scale)
@@ -138,15 +208,53 @@ String ColumnGenerator::randomDecimal(uint64_t prec, uint64_t scale)
     return s.substr(0, prec - scale) + "." + s.substr(prec - scale);
 }
 
+template <typename IntegerType>
 void ColumnGenerator::genInt(MutableColumnPtr & col)
 {
-    Field f = static_cast<Int64>(rand_gen());
+    static_assert(std::is_signed_v<IntegerType>);
+    constexpr Int64 min_value = std::numeric_limits<IntegerType>::min();
+    constexpr Int64 max_value = std::numeric_limits<IntegerType>::max();
+    auto init_value = static_cast<Int64>(rand_gen());
+    if (init_value > max_value || init_value < min_value)
+    {
+        init_value = init_value % max_value;
+    }
+    Field f = init_value;
     col->insert(f);
 }
 
+void ColumnGenerator::genEnumValue(MutableColumnPtr & col, DataTypePtr & enum_type)
+{
+    size_t value_count = 0;
+    const auto & enum8_type = static_cast<const DataTypeEnum8 *>(enum_type.get());
+    const auto & enum16_type = static_cast<const DataTypeEnum16 *>(enum_type.get());
+    if (enum8_type != nullptr)
+        value_count = enum8_type->getValues().size();
+    else
+        value_count = enum16_type->getValues().size();
+    auto value_index = static_cast<Int64>(static_cast<Int64>(rand_gen()) % value_count);
+    Int64 enum_value = enum8_type == nullptr ? enum16_type->getValues()[value_index].second
+                                             : enum8_type->getValues()[value_index].second;
+    col->insert(enum_value);
+}
+
+template <typename IntegerType>
 void ColumnGenerator::genUInt(MutableColumnPtr & col)
 {
-    Field f = static_cast<UInt64>(rand_gen());
+    static_assert(std::is_unsigned_v<IntegerType>);
+    constexpr UInt64 max_value = std::numeric_limits<IntegerType>::max();
+    auto init_value = static_cast<UInt64>(rand_gen());
+    if (init_value > max_value)
+    {
+        init_value = init_value % max_value;
+    }
+    Field f = init_value;
+    col->insert(f);
+}
+
+void ColumnGenerator::genBool(MutableColumnPtr & col)
+{
+    Field f = static_cast<UInt64>(static_cast<UInt64>(rand_gen()) % 8 == 0);
     col->insert(f);
 }
 
@@ -174,6 +282,12 @@ void ColumnGenerator::genDateTime(MutableColumnPtr & col)
     col->insert(f);
 }
 
+void ColumnGenerator::genDuration(MutableColumnPtr & col)
+{
+    Field f = parseMyDuration(randomDuration());
+    col->insert(f);
+}
+
 void ColumnGenerator::genDecimal(MutableColumnPtr & col, DataTypePtr & data_type)
 {
     auto prec = getDecimalPrecision(*data_type, 0);
@@ -187,7 +301,8 @@ void ColumnGenerator::genDecimal(MutableColumnPtr & col, DataTypePtr & data_type
     }
     else
     {
-        throw std::invalid_argument(fmt::format("RandomColumnGenerator parseDecimal({}, {}) prec {} scale {} fail", s, negative, prec, scale));
+        throw std::invalid_argument(
+            fmt::format("RandomColumnGenerator parseDecimal({}, {}) prec {} scale {} fail", s, negative, prec, scale));
     }
 }
 } // namespace DB::tests

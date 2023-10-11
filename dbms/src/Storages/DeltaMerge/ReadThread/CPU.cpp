@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,10 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 #include <Common/Exception.h>
+#include <Common/Logger.h>
 #include <Poco/DirectoryIterator.h>
 #include <Poco/File.h>
-#include <Poco/Logger.h>
 #include <Storages/DeltaMerge/ReadThread/CPU.h>
 #include <common/logger_useful.h>
 
@@ -26,13 +27,15 @@ namespace DB::DM
 // In Linux a numa node is represented by a device directory, such as '/sys/devices/system/node/node0', '/sys/devices/system/node/node01'.
 static inline bool isNodeDir(const std::string & name)
 {
-    return name.size() > 4 && name.substr(0, 4) == "node" && std::all_of(name.begin() + 4, name.end(), [](unsigned char c) { return std::isdigit(c); });
+    return name.size() > 4 && name.substr(0, 4) == "node"
+        && std::all_of(name.begin() + 4, name.end(), [](unsigned char c) { return std::isdigit(c); });
 }
 
 // Under a numa node directory is CPU cores and memory, such as  '/sys/devices/system/node/node0/cpu0' and '/sys/devices/system/node/node0/memory0'.
 static inline bool isCPU(const std::string & name)
 {
-    return name.size() > 3 && name.substr(0, 3) == "cpu" && std::all_of(name.begin() + 3, name.end(), [](unsigned char c) { return std::isdigit(c); });
+    return name.size() > 3 && name.substr(0, 3) == "cpu"
+        && std::all_of(name.begin() + 3, name.end(), [](unsigned char c) { return std::isdigit(c); });
 }
 
 static inline int parseCPUNumber(const std::string & name)
@@ -93,7 +96,7 @@ std::vector<std::vector<int>> getLinuxNumaNodes()
     return numa_nodes;
 }
 
-std::vector<std::vector<int>> getNumaNodes(Poco::Logger * log)
+std::vector<std::vector<int>> getNumaNodes(const LoggerPtr & log)
 {
 #ifndef __APPLE__ // Apple macbooks does not support NUMA
     try

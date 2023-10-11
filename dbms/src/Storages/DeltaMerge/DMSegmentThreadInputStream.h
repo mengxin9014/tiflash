@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #include <Common/FailPoint.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Storages/DeltaMerge/DMContext.h>
 #include <Storages/DeltaMerge/Segment.h>
 #include <Storages/DeltaMerge/SegmentReadTaskPool.h>
@@ -44,12 +44,10 @@ public:
         const SegmentReadTaskPoolPtr & task_pool_,
         AfterSegmentRead after_segment_read_,
         const ColumnDefines & columns_to_read_,
-        const RSOperatorPtr & filter_,
+        const PushDownFilterPtr & filter_,
         UInt64 max_version_,
         size_t expected_block_size_,
         ReadMode read_mode_,
-        const int extra_table_id_index,
-        const TableID physical_table_id,
         const String & req_id)
         : dm_context(dm_context_)
         , task_pool(task_pool_)
@@ -60,17 +58,8 @@ public:
         , max_version(max_version_)
         , expected_block_size(expected_block_size_)
         , read_mode(read_mode_)
-        , extra_table_id_index(extra_table_id_index)
-        , physical_table_id(physical_table_id)
         , log(Logger::get(req_id))
-    {
-        if (extra_table_id_index != InvalidColumnID)
-        {
-            ColumnDefine extra_table_id_col_define = getExtraTableIDColumnDefine();
-            ColumnWithTypeAndName col{extra_table_id_col_define.type->createColumn(), extra_table_id_col_define.type, extra_table_id_col_define.name, extra_table_id_col_define.id, extra_table_id_col_define.default_value};
-            header.insert(extra_table_id_index, col);
-        }
-    }
+    {}
 
     String getName() const override { return NAME; }
 
@@ -100,8 +89,18 @@ protected:
                 }
                 cur_segment = task->segment;
 
-                auto block_size = std::max(expected_block_size, static_cast<size_t>(dm_context->db_context.getSettingsRef().dt_segment_stable_pack_rows));
-                cur_stream = task->segment->getInputStream(read_mode, *dm_context, columns_to_read, task->read_snapshot, task->ranges, filter, max_version, block_size);
+                auto block_size = std::max(
+                    expected_block_size,
+                    static_cast<size_t>(dm_context->db_context.getSettingsRef().dt_segment_stable_pack_rows));
+                cur_stream = task->segment->getInputStream(
+                    read_mode,
+                    *dm_context,
+                    columns_to_read,
+                    task->read_snapshot,
+                    task->ranges,
+                    filter,
+                    max_version,
+                    block_size);
                 LOG_TRACE(log, "Start to read segment, segment={}", cur_segment->simpleInfo());
             }
             FAIL_POINT_PAUSE(FailPoints::pause_when_reading_from_dt_stream);
@@ -110,22 +109,8 @@ protected:
 
             if (res)
             {
-                if (extra_table_id_index != InvalidColumnID)
-                {
-                    ColumnDefine extra_table_id_col_define = getExtraTableIDColumnDefine();
-                    ColumnWithTypeAndName col{{}, extra_table_id_col_define.type, extra_table_id_col_define.name, extra_table_id_col_define.id};
-                    size_t row_number = res.rows();
-                    auto col_data = col.type->createColumnConst(row_number, Field(physical_table_id));
-                    col.column = std::move(col_data);
-                    res.insert(extra_table_id_index, std::move(col));
-                }
-                if (!res.rows())
-                    continue;
-                else
-                {
-                    total_rows += res.rows();
-                    return res;
-                }
+                total_rows += res.rows();
+                return res;
             }
             else
             {
@@ -137,33 +122,27 @@ protected:
         }
     }
 
-    void readSuffixImpl() override
-    {
-        LOG_DEBUG(log, "finish read {} rows from storage", total_rows);
-    }
+    void readSuffixImpl() override { LOG_DEBUG(log, "Finish read {} rows from storage", total_rows); }
 
 private:
     DMContextPtr dm_context;
     SegmentReadTaskPoolPtr task_pool;
     AfterSegmentRead after_segment_read;
     ColumnDefines columns_to_read;
-    RSOperatorPtr filter;
+    PushDownFilterPtr filter;
     Block header;
     const UInt64 max_version;
     const size_t expected_block_size;
     const ReadMode read_mode;
-    // position of the ExtraPhysTblID column in column_names parameter in the StorageDeltaMerge::read function.
-    const int extra_table_id_index;
+    size_t total_rows = 0;
 
     bool done = false;
 
     BlockInputStreamPtr cur_stream;
 
     SegmentPtr cur_segment;
-    TableID physical_table_id;
 
     LoggerPtr log;
-    size_t total_rows = 0;
 };
 
 } // namespace DM

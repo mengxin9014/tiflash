@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -123,7 +123,7 @@ ALWAYS_INLINE inline bool memcmp_eq_fixed_size(const char * a, const char * b)
             ret
 
         */
-        return std::memcmp(a, b, k) == 0;
+        return __builtin_memcmp(a, b, k) == 0;
     }
     else if constexpr (k > 8)
     {

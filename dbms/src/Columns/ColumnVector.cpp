@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <Columns/ColumnVector.h>
+#include <Columns/ColumnsCommon.h>
 #include <Common/Arena.h>
 #include <Common/Exception.h>
 #include <Common/HashTable/Hash.h>
@@ -40,18 +41,16 @@ extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
 
 
 template <typename T>
-StringRef ColumnVector<T>::serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const
+StringRef ColumnVector<T>::serializeValueIntoArena(
+    size_t n,
+    Arena & arena,
+    char const *& begin,
+    const TiDB::TiDBCollatorPtr &,
+    String &) const
 {
     auto * pos = arena.allocContinue(sizeof(T), begin);
     memcpy(pos, &data[n], sizeof(T));
     return StringRef(pos, sizeof(T));
-}
-
-template <typename T>
-const char * ColumnVector<T>::deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &)
-{
-    data.push_back(*reinterpret_cast<const T *>(pos));
-    return pos + sizeof(T);
 }
 
 template <typename T>
@@ -61,7 +60,8 @@ void ColumnVector<T>::updateHashWithValue(size_t n, SipHash & hash, const TiDB::
 }
 
 template <typename T>
-void ColumnVector<T>::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const
+void ColumnVector<T>::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+    const
 {
     for (size_t i = 0, sz = size(); i < sz; ++i)
     {
@@ -76,7 +76,10 @@ void ColumnVector<T>::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollat
 
     if (hash.getData().size() != s)
         throw Exception(
-            fmt::format("Size of WeakHash32 does not match size of column: column size is {}, hash size is {}", s, hash.getData().size()),
+            fmt::format(
+                "Size of WeakHash32 does not match size of column: column size is {}, hash size is {}",
+                s,
+                hash.getData().size()),
             ErrorCodes::LOGICAL_ERROR);
 
     const T * begin = data.data();
@@ -104,7 +107,10 @@ struct ColumnVector<T>::less
         : parent(parent_)
         , nan_direction_hint(nan_direction_hint_)
     {}
-    bool operator()(size_t lhs, size_t rhs) const { return CompareHelper<T>::less(parent.data[lhs], parent.data[rhs], nan_direction_hint); }
+    bool operator()(size_t lhs, size_t rhs) const
+    {
+        return CompareHelper<T>::less(parent.data[lhs], parent.data[rhs], nan_direction_hint);
+    }
 };
 
 template <typename T>
@@ -116,11 +122,15 @@ struct ColumnVector<T>::greater
         : parent(parent_)
         , nan_direction_hint(nan_direction_hint_)
     {}
-    bool operator()(size_t lhs, size_t rhs) const { return CompareHelper<T>::greater(parent.data[lhs], parent.data[rhs], nan_direction_hint); }
+    bool operator()(size_t lhs, size_t rhs) const
+    {
+        return CompareHelper<T>::greater(parent.data[lhs], parent.data[rhs], nan_direction_hint);
+    }
 };
 
 template <typename T>
-void ColumnVector<T>::getPermutation(bool reverse, size_t limit, int nan_direction_hint, IColumn::Permutation & res) const
+void ColumnVector<T>::getPermutation(bool reverse, size_t limit, int nan_direction_hint, IColumn::Permutation & res)
+    const
 {
     size_t s = data.size();
     res.resize(s);
@@ -198,7 +208,8 @@ void ColumnVector<T>::insertRangeFrom(const IColumn & src, size_t start, size_t 
     if (start + length > src_vec.data.size())
         throw Exception(
             fmt::format(
-                "Parameters are out of bound in ColumnVector<T>::insertRangeFrom method, start={}, length={}, src.size()={}",
+                "Parameters are out of bound in ColumnVector<T>::insertRangeFrom method, start={}, length={}, "
+                "src.size()={}",
                 start,
                 length,
                 src_vec.data.size()),
@@ -220,7 +231,11 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
     Container & res_data = res->getData();
 
     if (result_size_hint)
-        res_data.reserve(result_size_hint > 0 ? result_size_hint : size);
+    {
+        if (result_size_hint < 0)
+            result_size_hint = countBytesInFilter(filt);
+        res_data.reserve(result_size_hint);
+    }
 
     const UInt8 * filt_pos = &filt[0];
     const UInt8 * filt_end = filt_pos + size;
@@ -239,7 +254,8 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
 
     while (filt_pos < filt_end_sse)
     {
-        int mask = _mm_movemask_epi8(_mm_cmpgt_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(filt_pos)), zero16));
+        int mask
+            = _mm_movemask_epi8(_mm_cmpgt_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(filt_pos)), zero16));
 
         if (0 == mask)
         {
@@ -295,27 +311,34 @@ ColumnPtr ColumnVector<T>::permute(const IColumn::Permutation & perm, size_t lim
 }
 
 template <typename T>
-ColumnPtr ColumnVector<T>::replicate(const IColumn::Offsets & offsets) const
+ColumnPtr ColumnVector<T>::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const
 {
     size_t size = data.size();
     if (size != offsets.size())
         throw Exception("Size of offsets doesn't match size of column.", ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+
+    assert(start_row < end_row);
+    assert(end_row <= size);
 
     if (0 == size)
         return this->create();
 
     auto res = this->create();
     typename Self::Container & res_data = res->getData();
-    res_data.reserve(offsets.back());
+
+    res_data.reserve(offsets[end_row - 1]);
 
     IColumn::Offset prev_offset = 0;
-    for (size_t i = 0; i < size; ++i)
+
+    for (size_t i = start_row; i < end_row; ++i)
     {
         size_t size_to_replicate = offsets[i] - prev_offset;
         prev_offset = offsets[i];
 
         for (size_t j = 0; j < size_to_replicate; ++j)
+        {
             res_data.push_back(data[i]);
+        }
     }
 
     return res;

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,18 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <IO/CompressedReadBuffer.h>
+#include <IO/CompressedWriteBuffer.h>
 #include <IO/ReadBufferFromMemory.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/V3/PageDefines.h>
 #include <Storages/Page/V3/PageEntriesEdit.h>
 #include <Storages/Page/V3/PageEntry.h>
+#include <Storages/Page/V3/Universal/UniversalPageId.h>
 #include <Storages/Page/V3/WAL/serialize.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 
 #include <magic_enum.hpp>
+#include <type_traits>
 
-namespace DB::PS::V3::ser
+namespace DB::PS::V3
 {
 inline void serializeVersionTo(const PageVersion & version, WriteBuffer & buf)
 {
@@ -37,7 +41,7 @@ inline void deserializeVersionFrom(ReadBuffer & buf, PageVersion & version)
     readIntBinary(version.epoch, buf);
 }
 
-inline void serializeEntryTo(const PageEntryV3 & entry, WriteBuffer & buf)
+inline void serializeEntryTo(const PageEntryV3 & entry, WriteBuffer & buf, bool has_checkpoint_info)
 {
     writeIntBinary(entry.file_id, buf);
     writeIntBinary(entry.offset, buf);
@@ -52,9 +56,19 @@ inline void serializeEntryTo(const PageEntryV3 & entry, WriteBuffer & buf)
         writeIntBinary(off, buf);
         writeIntBinary(checksum, buf);
     }
+    if (has_checkpoint_info)
+    {
+        writeIntBinary(entry.checkpoint_info.data_location.offset_in_file, buf);
+        writeIntBinary(entry.checkpoint_info.data_location.size_in_file, buf);
+        writeStringBinary(*(entry.checkpoint_info.data_location.data_file_id), buf);
+    }
 }
 
-inline void deserializeEntryFrom(ReadBuffer & buf, PageEntryV3 & entry)
+inline void deserializeEntryFrom(
+    ReadBuffer & buf,
+    PageEntryV3 & entry,
+    bool has_checkpoint_info,
+    DataFileIdSet * data_file_id_set)
 {
     readIntBinary(entry.file_id, buf);
     readIntBinary(entry.offset, buf);
@@ -78,115 +92,277 @@ inline void deserializeEntryFrom(ReadBuffer & buf, PageEntryV3 & entry)
             entry.field_offsets.emplace_back(field_offset, field_checksum);
         }
     }
+    if (has_checkpoint_info)
+    {
+        OptionalCheckpointInfo checkpoint_info;
+        checkpoint_info.is_valid = true; // contains valid value
+        checkpoint_info.is_local_data_reclaimed = (entry.file_id == INVALID_BLOBFILE_ID);
+        readIntBinary(checkpoint_info.data_location.offset_in_file, buf);
+        readIntBinary(checkpoint_info.data_location.size_in_file, buf);
+        String data_file_id;
+        readStringBinary(data_file_id, buf);
+        if (data_file_id_set != nullptr)
+        {
+            auto iter = data_file_id_set->find(data_file_id);
+            if (iter != data_file_id_set->end())
+            {
+                checkpoint_info.data_location.data_file_id = *iter;
+            }
+            else
+            {
+                checkpoint_info.data_location.data_file_id = std::make_shared<String>(data_file_id);
+                data_file_id_set->emplace(checkpoint_info.data_location.data_file_id);
+            }
+        }
+        else
+        {
+            checkpoint_info.data_location.data_file_id = std::make_shared<String>(data_file_id);
+        }
+        entry.checkpoint_info = checkpoint_info;
+    }
 }
 
-void serializePutTo(const PageEntriesEdit::EditRecord & record, WriteBuffer & buf)
+inline void deserializeUniversalPageIDFrom(ReadBuffer & buf, UniversalPageId & page_id)
 {
-    assert(record.type == EditRecordType::PUT || record.type == EditRecordType::UPSERT || record.type == EditRecordType::VAR_ENTRY);
+    String s_id;
+    readStringBinary(s_id, buf);
+    page_id = std::move(s_id);
+}
+
+inline void deserializeUInt128PageIDFrom(ReadBuffer & buf, PageIdV3Internal & page_id)
+{
+    readIntBinary(page_id, buf);
+}
+
+static constexpr UInt32 FLAG_CHECKPOINT_INFO = 0x01;
+
+inline UInt32 setCheckpointInfoExists(UInt32 flags)
+{
+    return flags | FLAG_CHECKPOINT_INFO;
+}
+
+inline bool isCheckpointInfoExists(UInt32 flags)
+{
+    return flags & FLAG_CHECKPOINT_INFO;
+}
+
+template <typename EditRecord>
+void serializePutTo(const EditRecord & record, WriteBuffer & buf)
+{
+    assert(
+        record.type == EditRecordType::PUT || record.type == EditRecordType::UPSERT
+        || record.type == EditRecordType::VAR_ENTRY || record.type == EditRecordType::UPDATE_DATA_FROM_REMOTE);
 
     writeIntBinary(record.type, buf);
 
     UInt32 flags = 0;
+    bool has_checkpoint_info = record.entry.checkpoint_info.has_value();
+    if (has_checkpoint_info)
+    {
+        flags = setCheckpointInfoExists(flags);
+    }
     writeIntBinary(flags, buf);
-    writeIntBinary(record.page_id, buf);
+    if constexpr (std::is_same_v<EditRecord, u128::PageEntriesEdit::EditRecord>)
+    {
+        writeIntBinary(record.page_id, buf);
+    }
+    else if constexpr (std::is_same_v<EditRecord, universal::PageEntriesEdit::EditRecord>)
+    {
+        writeStringBinary(record.page_id.asStr(), buf);
+    }
     serializeVersionTo(record.version, buf);
     writeIntBinary(record.being_ref_count, buf);
 
-    serializeEntryTo(record.entry, buf);
+    serializeEntryTo(record.entry, buf, has_checkpoint_info);
 }
 
-void deserializePutFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, PageEntriesEdit & edit)
+template <typename EditType>
+void deserializePutFrom(
+    [[maybe_unused]] const EditRecordType record_type,
+    ReadBuffer & buf,
+    EditType & edit,
+    DataFileIdSet * data_file_id_set)
 {
-    assert(record_type == EditRecordType::PUT || record_type == EditRecordType::UPSERT || record_type == EditRecordType::VAR_ENTRY);
+    assert(
+        record_type == EditRecordType::PUT || record_type == EditRecordType::UPSERT
+        || record_type == EditRecordType::VAR_ENTRY || record_type == EditRecordType::UPDATE_DATA_FROM_REMOTE);
 
     UInt32 flags = 0;
     readIntBinary(flags, buf);
+    bool has_checkpoint_info = isCheckpointInfoExists(flags);
 
-    PageEntriesEdit::EditRecord rec;
+    typename EditType::EditRecord rec;
     rec.type = record_type;
-    readIntBinary(rec.page_id, buf);
+    if constexpr (std::is_same_v<typename EditType::PageId, PageIdV3Internal>)
+    {
+        deserializeUInt128PageIDFrom(buf, rec.page_id);
+    }
+    else if constexpr (std::is_same_v<typename EditType::PageId, UniversalPageId>)
+    {
+        deserializeUniversalPageIDFrom(buf, rec.page_id);
+    }
     deserializeVersionFrom(buf, rec.version);
     readIntBinary(rec.being_ref_count, buf);
+    deserializeEntryFrom(buf, rec.entry, has_checkpoint_info, data_file_id_set);
 
-    deserializeEntryFrom(buf, rec.entry);
     edit.appendRecord(rec);
 }
 
-void serializeRefTo(const PageEntriesEdit::EditRecord & record, WriteBuffer & buf)
+template <typename EditRecord>
+void serializeRefTo(const EditRecord & record, WriteBuffer & buf)
 {
     assert(record.type == EditRecordType::REF || record.type == EditRecordType::VAR_REF);
 
     writeIntBinary(record.type, buf);
 
-    writeIntBinary(record.page_id, buf);
-    writeIntBinary(record.ori_page_id, buf);
+    if constexpr (std::is_same_v<EditRecord, u128::PageEntriesEdit::EditRecord>)
+    {
+        writeIntBinary(record.page_id, buf);
+        writeIntBinary(record.ori_page_id, buf);
+    }
+    else if constexpr (std::is_same_v<EditRecord, universal::PageEntriesEdit::EditRecord>)
+    {
+        writeStringBinary(record.page_id.asStr(), buf);
+        writeStringBinary(record.ori_page_id.asStr(), buf);
+    }
     serializeVersionTo(record.version, buf);
     assert(record.entry.file_id == INVALID_BLOBFILE_ID);
 }
 
-void deserializeRefFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, PageEntriesEdit & edit)
+template <typename EditType>
+void deserializeRefFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, EditType & edit)
 {
     assert(record_type == EditRecordType::REF || record_type == EditRecordType::VAR_REF);
 
-    PageEntriesEdit::EditRecord rec;
+    typename EditType::EditRecord rec;
     rec.type = record_type;
-    readIntBinary(rec.page_id, buf);
-    readIntBinary(rec.ori_page_id, buf);
+    if constexpr (std::is_same_v<typename EditType::PageId, PageIdV3Internal>)
+    {
+        deserializeUInt128PageIDFrom(buf, rec.page_id);
+        deserializeUInt128PageIDFrom(buf, rec.ori_page_id);
+    }
+    else if constexpr (std::is_same_v<typename EditType::PageId, UniversalPageId>)
+    {
+        deserializeUniversalPageIDFrom(buf, rec.page_id);
+        deserializeUniversalPageIDFrom(buf, rec.ori_page_id);
+    }
     deserializeVersionFrom(buf, rec.version);
     edit.appendRecord(rec);
 }
 
-
-void serializePutExternalTo(const PageEntriesEdit::EditRecord & record, WriteBuffer & buf)
+template <typename EditRecord>
+void serializePutExternalTo(const EditRecord & record, WriteBuffer & buf)
 {
     assert(record.type == EditRecordType::PUT_EXTERNAL || record.type == EditRecordType::VAR_EXTERNAL);
 
     writeIntBinary(record.type, buf);
 
-    writeIntBinary(record.page_id, buf);
+    if constexpr (std::is_same_v<EditRecord, u128::PageEntriesEdit::EditRecord>)
+    {
+        writeIntBinary(record.page_id, buf);
+    }
+    else if constexpr (std::is_same_v<EditRecord, universal::PageEntriesEdit::EditRecord>)
+    {
+        writeStringBinary(record.page_id.asStr(), buf);
+    }
     serializeVersionTo(record.version, buf);
     writeIntBinary(record.being_ref_count, buf);
+
+    if constexpr (std::is_same_v<EditRecord, universal::PageEntriesEdit::EditRecord>)
+    {
+        UInt32 flags = 0x0;
+        if (record.entry.checkpoint_info.has_value())
+        {
+            flags = setCheckpointInfoExists(flags);
+            writeIntBinary(flags, buf);
+            writeIntBinary(record.entry.checkpoint_info.data_location.offset_in_file, buf);
+            writeIntBinary(record.entry.checkpoint_info.data_location.size_in_file, buf);
+            writeStringBinary(*(record.entry.checkpoint_info.data_location.data_file_id), buf);
+        }
+        else
+        {
+            writeIntBinary(flags, buf);
+        }
+    }
 }
 
-void deserializePutExternalFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, PageEntriesEdit & edit)
+template <typename EditType>
+void deserializePutExternalFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, EditType & edit)
 {
     assert(record_type == EditRecordType::PUT_EXTERNAL || record_type == EditRecordType::VAR_EXTERNAL);
 
-    PageEntriesEdit::EditRecord rec;
+    typename EditType::EditRecord rec;
     rec.type = record_type;
-    readIntBinary(rec.page_id, buf);
+    if constexpr (std::is_same_v<typename EditType::PageId, PageIdV3Internal>)
+    {
+        deserializeUInt128PageIDFrom(buf, rec.page_id);
+    }
+    else if constexpr (std::is_same_v<typename EditType::PageId, UniversalPageId>)
+    {
+        deserializeUniversalPageIDFrom(buf, rec.page_id);
+    }
     deserializeVersionFrom(buf, rec.version);
     readIntBinary(rec.being_ref_count, buf);
+    if constexpr (std::is_same_v<typename EditType::PageId, UniversalPageId>)
+    {
+        UInt32 flags = 0;
+        readIntBinary(flags, buf);
+        if (isCheckpointInfoExists(flags))
+        {
+            OptionalCheckpointInfo checkpoint_info;
+            checkpoint_info.is_valid = true; // contains valid value
+            checkpoint_info.is_local_data_reclaimed = true;
+            readIntBinary(checkpoint_info.data_location.offset_in_file, buf);
+            readIntBinary(checkpoint_info.data_location.size_in_file, buf);
+            String data_file_id;
+            readStringBinary(data_file_id, buf);
+            // TODO: The `data_file_id` of external id is the lock key of DTFile, so it should almost have no duplication.
+            checkpoint_info.data_location.data_file_id = std::make_shared<String>(data_file_id);
+            rec.entry.checkpoint_info = checkpoint_info;
+        }
+    }
     edit.appendRecord(rec);
 }
 
-void serializeDelTo(const PageEntriesEdit::EditRecord & record, WriteBuffer & buf)
+template <typename EditRecord>
+void serializeDelTo(const EditRecord & record, WriteBuffer & buf)
 {
     assert(record.type == EditRecordType::DEL || record.type == EditRecordType::VAR_DELETE);
 
     writeIntBinary(record.type, buf);
 
-    writeIntBinary(record.page_id, buf);
+    if constexpr (std::is_same_v<EditRecord, u128::PageEntriesEdit::EditRecord>)
+    {
+        writeIntBinary(record.page_id, buf);
+    }
+    else if constexpr (std::is_same_v<EditRecord, universal::PageEntriesEdit::EditRecord>)
+    {
+        writeStringBinary(record.page_id.asStr(), buf);
+    }
     serializeVersionTo(record.version, buf);
 }
 
-void deserializeDelFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, PageEntriesEdit & edit)
+template <typename EditType>
+void deserializeDelFrom([[maybe_unused]] const EditRecordType record_type, ReadBuffer & buf, EditType & edit)
 {
     assert(record_type == EditRecordType::DEL || record_type == EditRecordType::VAR_DELETE);
 
-    PageIdV3Internal page_id;
-    readIntBinary(page_id, buf);
-    PageVersion version;
-    deserializeVersionFrom(buf, version);
-
-    PageEntriesEdit::EditRecord rec;
+    typename EditType::EditRecord rec;
     rec.type = record_type;
-    rec.page_id = page_id;
-    rec.version = version;
+    if constexpr (std::is_same_v<typename EditType::PageId, PageIdV3Internal>)
+    {
+        deserializeUInt128PageIDFrom(buf, rec.page_id);
+    }
+    else if constexpr (std::is_same_v<typename EditType::PageId, UniversalPageId>)
+    {
+        deserializeUniversalPageIDFrom(buf, rec.page_id);
+    }
+    deserializeVersionFrom(buf, rec.version);
     edit.appendRecord(rec);
 }
 
-void deserializeFrom(ReadBuffer & buf, PageEntriesEdit & edit)
+template <typename EditType>
+void deserializeFrom(ReadBuffer & buf, EditType & edit, DataFileIdSet * data_file_id_set)
 {
     EditRecordType record_type;
     while (!buf.eof())
@@ -197,8 +373,9 @@ void deserializeFrom(ReadBuffer & buf, PageEntriesEdit & edit)
         case EditRecordType::PUT:
         case EditRecordType::UPSERT:
         case EditRecordType::VAR_ENTRY:
+        case EditRecordType::UPDATE_DATA_FROM_REMOTE:
         {
-            deserializePutFrom(record_type, buf, edit);
+            deserializePutFrom(record_type, buf, edit, data_file_id_set);
             break;
         }
         case EditRecordType::REF:
@@ -220,15 +397,18 @@ void deserializeFrom(ReadBuffer & buf, PageEntriesEdit & edit)
             break;
         }
         default:
-            throw Exception(fmt::format("Unknown record type: {}", static_cast<Int32>(record_type)), ErrorCodes::LOGICAL_ERROR);
+            throw Exception(
+                fmt::format("Unknown record type: {}", static_cast<Int32>(record_type)),
+                ErrorCodes::LOGICAL_ERROR);
         }
     }
 }
 
-String serializeTo(const PageEntriesEdit & edit)
+template <typename PageEntriesEdit>
+String Serializer<PageEntriesEdit>::serializeTo(const PageEntriesEdit & edit)
 {
     WriteBufferFromOwnString buf;
-    UInt32 version = 1;
+    UInt32 version = WALSerializeVersion::Plain;
     writeIntBinary(version, buf);
     for (const auto & record : edit.getRecords())
     {
@@ -237,6 +417,7 @@ String serializeTo(const PageEntriesEdit & edit)
         case EditRecordType::PUT:
         case EditRecordType::UPSERT:
         case EditRecordType::VAR_ENTRY:
+        case EditRecordType::UPDATE_DATA_FROM_REMOTE:
             serializePutTo(record, buf);
             break;
         case EditRecordType::REF:
@@ -254,19 +435,70 @@ String serializeTo(const PageEntriesEdit & edit)
         }
     }
     return buf.releaseStr();
+};
+
+template <typename PageEntriesEdit>
+String Serializer<PageEntriesEdit>::serializeInCompressedFormTo(const PageEntriesEdit & edit)
+{
+    WriteBufferFromOwnString buf;
+    UInt32 version = WALSerializeVersion::LZ4;
+    writeIntBinary(version, buf);
+    CompressedWriteBuffer compressed_buf(buf);
+    for (const auto & record : edit.getRecords())
+    {
+        switch (record.type)
+        {
+        case EditRecordType::PUT:
+        case EditRecordType::UPSERT:
+        case EditRecordType::VAR_ENTRY:
+        case EditRecordType::UPDATE_DATA_FROM_REMOTE:
+            serializePutTo(record, compressed_buf);
+            break;
+        case EditRecordType::REF:
+        case EditRecordType::VAR_REF:
+            serializeRefTo(record, compressed_buf);
+            break;
+        case EditRecordType::VAR_DELETE:
+        case EditRecordType::DEL:
+            serializeDelTo(record, compressed_buf);
+            break;
+        case EditRecordType::PUT_EXTERNAL:
+        case EditRecordType::VAR_EXTERNAL:
+            serializePutExternalTo(record, compressed_buf);
+            break;
+        }
+    }
+    compressed_buf.next();
+    return buf.releaseStr();
 }
 
-PageEntriesEdit deserializeFrom(std::string_view record)
+
+template <typename PageEntriesEdit>
+PageEntriesEdit Serializer<PageEntriesEdit>::deserializeFrom(std::string_view record, DataFileIdSet * data_file_id_set)
 {
     PageEntriesEdit edit;
     ReadBufferFromMemory buf(record.data(), record.size());
     UInt32 version = 0;
     readIntBinary(version, buf);
-    if (version != 1)
-        throw Exception(fmt::format("Unknown version for PageEntriesEdit deser [version={}]", version), ErrorCodes::LOGICAL_ERROR);
-
-    deserializeFrom(buf, edit);
+    switch (version)
+    {
+    case WALSerializeVersion::Plain:
+        DB::PS::V3::deserializeFrom(buf, edit, data_file_id_set);
+        break;
+    case WALSerializeVersion::LZ4:
+    {
+        CompressedReadBuffer compressed_buf(buf);
+        DB::PS::V3::deserializeFrom(compressed_buf, edit, data_file_id_set);
+        break;
+    }
+    default:
+        throw Exception(
+            fmt::format("Unknown version for PageEntriesEdit deser [version={}]", version),
+            ErrorCodes::LOGICAL_ERROR);
+    }
     return edit;
-}
+};
 
-} // namespace DB::PS::V3::ser
+template struct Serializer<u128::PageEntriesEdit>;
+template struct Serializer<universal::PageEntriesEdit>;
+} // namespace DB::PS::V3

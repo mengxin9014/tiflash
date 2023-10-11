@@ -1,13 +1,15 @@
 header:
   license:
     spdx-id: Apache-2.0
-    copyright-owner: PingCAP, Ltd.
+    copyright-owner: PingCAP, Inc.
   paths-ignore:
     - '.gitignore'
     - '.gitattributes'
     - '.gitmodules'
     - '.clang-format'
     - '.clang-tidy'
+    - '.clangd'
+    - '.env'
     - 'Jenkinsfile'
     - 'LICENSE'
     - 'NOTICE'
@@ -16,7 +18,7 @@ header:
     - '.github/'
     - 'docs/'
     - 'tests/testsdata/'
-    - 'release-centos7-llvm/dockerfiles/'    
+    - 'release-centos7-llvm/dockerfiles/'
     - '**/.gitignore'
     - '**/*.md'
     - '**/*.json'
@@ -33,8 +35,13 @@ header:
     - '**/NOTICE'
     - 'dbms/src/IO/tests/limit_read_buffer.reference'
     - 'dbms/src/IO/tests/DevicePixelRatio'
+    - 'dbms/src/Flash/tests/gtest_*.out'
     - 'Cargo.lock'
     - 'Cargo.toml'
     - 'rust-toolchain'
+    - '.devcontainer/'
+    - '**/OWNERS'
+    - 'OWNERS_ALIASES'
+    - '**/*.sql'
 
   comment: on-failure

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ public:
     void add(const ElemPtr & ptr)
     {
         l.push_back(ptr);
-        m[ptr->poolId()] = --l.end();
+        m[ptr->pool_id] = --l.end();
     }
 
     ElemPtr next()
@@ -48,7 +48,7 @@ public:
             }
             else
             {
-                m.erase((*last_itr)->poolId());
+                m.erase((*last_itr)->pool_id);
                 last_itr = l.erase(last_itr);
                 if (last_itr == l.end())
                 {
@@ -59,10 +59,7 @@ public:
         return nullptr;
     }
 
-    size_t size() const
-    {
-        return l.size();
-    }
+    size_t size() const { return l.size(); }
 
     // `count` is for test
     std::pair<int64_t, int64_t> count(int64_t table_id) const
@@ -71,7 +68,7 @@ public:
         int64_t invalid = 0;
         for (const auto & p : l)
         {
-            if (table_id == 0 || p->tableId() == table_id)
+            if (table_id == 0 || p->physical_table_id == table_id)
             {
                 p->valid() ? valid++ : invalid++;
             }

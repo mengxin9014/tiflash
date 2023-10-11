@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,14 +32,16 @@ struct MockSchemaGetter
         return MockTiDB::instance().getSchemaDiff(version);
     }
 
-    static bool checkSchemaDiffExists(Int64 version)
-    {
-        return MockTiDB::instance().checkSchemaDiffExists(version);
-    }
+    static bool checkSchemaDiffExists(Int64 version) { return MockTiDB::instance().checkSchemaDiffExists(version); }
 
     static TiDB::TableInfoPtr getTableInfo(DatabaseID, TableID table_id)
     {
         return MockTiDB::instance().getTableInfoByID(table_id);
+    }
+
+    static std::tuple<TiDB::DBInfoPtr, TiDB::TableInfoPtr> getDatabaseAndTableInfo(DatabaseID db_id, TableID table_id)
+    {
+        return std::make_tuple(getDatabase(db_id), getTableInfo(db_id, table_id));
     }
 
     static std::vector<TiDB::DBInfoPtr> listDBs()
@@ -71,6 +73,8 @@ struct MockSchemaGetter
         }
         return res;
     }
+
+    KeyspaceID getKeyspaceID() const { return NullspaceID; }
 };
 
 } // namespace DB

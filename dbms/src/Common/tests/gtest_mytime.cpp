@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,10 @@ protected:
     virtual void TearDown() override {}
 
 public:
-    static void checkParseMyDateTime(const std::string & str, const std::string & expected, const DataTypeMyDateTime & type)
+    static void checkParseMyDateTime(
+        const std::string & str,
+        const std::string & expected,
+        const DataTypeMyDateTime & type)
     {
         try
         {
@@ -50,7 +53,10 @@ public:
         }
     }
 
-    static void checkParseMyDateTime(const std::string & str, const MyDateTime & expected, const DataTypeMyDateTime & type)
+    static void checkParseMyDateTime(
+        const std::string & str,
+        const MyDateTime & expected,
+        const DataTypeMyDateTime & type)
     {
         try
         {
@@ -71,7 +77,11 @@ public:
         }
     }
 
-    static void checkNumberToMyDateTime(const Int64 & input, const MyDateTime & expected, bool expect_error, DAGContext *)
+    static void checkNumberToMyDateTime(
+        const Int64 & input,
+        const MyDateTime & expected,
+        bool expect_error,
+        DAGContext *)
     {
         if (expect_error)
         {
@@ -121,6 +131,59 @@ try
     {
         checkParseMyDateTime(str, expected, type_with_fraction);
     }
+    cases_with_fsp = {
+        {"2012-12-31 11:30:45", "2012-12-31 11:30:45"},
+        {"0000-00-00 00:00:00", "0000-00-00 00:00:00"},
+        {"0001-01-01 00:00:00", "0001-01-01 00:00:00"},
+        {"00-12-31 11:30:45", "2000-12-31 11:30:45"},
+        {"12-12-31 11:30:45", "2012-12-31 11:30:45"},
+        {"2012-12-31", "2012-12-31 00:00:00"},
+        {"20121231", "2012-12-31 00:00:00"},
+        {"121231", "2012-12-31 00:00:00"},
+        {"2012^12^31 11+30+45", "2012-12-31 11:30:45"},
+        {"2012^12^31T11+30+45", "2012-12-31 11:30:45"},
+        {"2012-2-1 11:30:45", "2012-02-01 11:30:45"},
+        {"12-2-1 11:30:45", "2012-02-01 11:30:45"},
+        {"20121231113045", "2012-12-31 11:30:45"},
+        {"121231113045", "2012-12-31 11:30:45"},
+        {"2012-02-29", "2012-02-29 00:00:00"},
+        {"00-00-00", "0000-00-00 00:00:00"},
+        // {"00-00-00 00:00:00.123", "2000-00-00 00:00:00.123"},
+        {"11111111111", "2011-11-11 11:11:01"},
+        {"1701020301.", "2017-01-02 03:01:00"},
+        // {"1701020304.1", "2017-01-02 03:04:01.0"},
+        // {"1701020302.11", "2017-01-02 03:02:11.00"},
+        {"170102036", "2017-01-02 03:06:00"},
+        {"170102039.", "2017-01-02 03:09:00"},
+        // {"170102037.11", "2017-01-02 03:07:11.00"},
+        {"2018-01-01 18", "2018-01-01 18:00:00"},
+        {"18-01-01 18", "2018-01-01 18:00:00"},
+        // {"2018.01.01", "2018-01-01 00:00:00.00"},
+        // {"2020.10.10 10.10.10", "2020-10-10 10:10:10.00"},
+        // {"2020-10-10 10-10.10", "2020-10-10 10:10:10.00"},
+        // {"2020-10-10 10.10", "2020-10-10 10:10:00.00"},
+        // {"2018.01.01", "2018-01-01 00:00:00.00"},
+        {"2018.01.01 00:00:00", "2018-01-01 00:00:00"},
+        {"2018/01/01-00:00:00", "2018-01-01 00:00:00"},
+        {"4710072", "2047-10-07 02:00:00"},
+        {"2016-06-01 00:00:00 00:00:00", "2016-06-01 00:00:00"},
+        {"2020-06-01 00:00:00ads!,?*da;dsx", "2020-06-01 00:00:00"},
+
+        {"2020-05-28 23:59:59 00:00:00", "2020-05-28 23:59:59"},
+        {"2020-05-28 23:59:59-00:00:00", "2020-05-28 23:59:59"},
+        {"2020-05-28 23:59:59T T00:00:00", "2020-05-28 23:59:59"},
+        {"2020-10-22 10:31-10:12", "2020-10-22 10:31:10"},
+        {"2018.01.01 01:00:00", "2018-01-01 01:00:00"},
+
+        // {"2020-01-01 12:00:00.123456+05:00", "2020-01-01 07:00:00.123456"}
+    };
+    DataTypeMyDateTime type_with_zero_fraction(0);
+    for (auto & [str, expected] : cases_with_fsp)
+    {
+        checkParseMyDateTime(str, expected, type_with_zero_fraction);
+    }
+    DataTypeMyDateTime tp(2);
+    checkParseMyDateTime("2010-12-31 23:59:59.99999", "2011-01-01 00:00:00.00", tp);
 }
 catch (Exception & e)
 {
@@ -250,15 +313,30 @@ try
         {"   2/Jun/2019 ", " %d/%b/%Y", MyDateTime{2019, 6, 2, 0, 0, 0, 0}},
         //
         {"31/May/2016 12:34:56.1234", "%d/%b/%Y %H:%i:%S.%f", MyDateTime{2016, 5, 31, 12, 34, 56, 123400}},
-        {"31/may/2016 12:34:56.1234", "%d/%b/%Y %H:%i:%S.%f", MyDateTime{2016, 5, 31, 12, 34, 56, 123400}}, // case insensitive
+        {"31/may/2016 12:34:56.1234",
+         "%d/%b/%Y %H:%i:%S.%f",
+         MyDateTime{2016, 5, 31, 12, 34, 56, 123400}}, // case insensitive
         {"31/mayy/2016 12:34:56.1234", "%d/%b/%Y %H:%i:%S.%f", std::nullopt}, // invalid %b
         {"31/mey/2016 12:34:56.1234", "%d/%b/%Y %H:%i:%S.%f", std::nullopt}, // invalid %b
-        {"30/April/2016 12:34:56.", "%d/%M/%Y %H:%i:%s.%f", MyDateTime{2016, 4, 30, 12, 34, 56, 0}}, // empty %f is valid
+        {"30/April/2016 12:34:56.",
+         "%d/%M/%Y %H:%i:%s.%f",
+         MyDateTime{2016, 4, 30, 12, 34, 56, 0}}, // empty %f is valid
         {"30/april/2016 12:34:56.", "%d/%M/%Y %H:%i:%s.%f", MyDateTime{2016, 4, 30, 12, 34, 56, 0}}, // case insensitive
         {"30/Apri/2016 12:34:56.", "%d/%M/%Y %H:%i:%s.%f", std::nullopt}, // invalid %M
         {"30/Aprill/2016 12:34:56.", "%d/%M/%Y %H:%i:%s.%f", std::nullopt}, // invalid %M
-        {"30/Feb/2016 12:34:56.1234", "%d/%b/%Y %H:%i:%S.%f", MyDateTime{2016, 2, 30, 12, 34, 56, 123400}}, // Feb 30th (not exist in actual) is valid for parsing (in mariadb)
-        {"31/April/2016 12:34:56.", "%d/%M/%Y %H:%i:%s.%f", MyDateTime{2016, 4, 31, 12, 34, 56, 0}}, // April 31th (not exist in actual)
+        {"30/Feb/2016 12:34:56.1234",
+         "%d/%b/%Y %H:%i:%S.%f",
+         MyDateTime{
+             2016,
+             2,
+             30,
+             12,
+             34,
+             56,
+             123400}}, // Feb 30th (not exist in actual) is valid for parsing (in mariadb)
+        {"31/April/2016 12:34:56.",
+         "%d/%M/%Y %H:%i:%s.%f",
+         MyDateTime{2016, 4, 31, 12, 34, 56, 0}}, // April 31th (not exist in actual)
         {"01,5,2013 9", "%d,%c,%Y %f", MyDateTime{2013, 5, 1, 0, 0, 0, 900000}},
         {"01,52013", "%d,%c%Y", std::nullopt}, // %c will try to parse '52' as month and fail
         {"01,5,2013", "%d,%c,%Y", MyDateTime{2013, 5, 1, 0, 0, 0, 0}}, //
@@ -309,8 +387,12 @@ try
         {"01/Feb/2016 abcdefg 23:45:54", "%d/%b/%Y abcdefg %H:%i:%S", MyDateTime(2016, 2, 1, 23, 45, 54, 0)},
         // the number of whitespace between pattern and input doesn't matter
         {"01/Feb/2016   abcdefg 23:45: 54", "%d/%b/%Y abcdefg %H  :%i:%S", MyDateTime(2016, 2, 1, 23, 45, 54, 0)},
-        {"01/Feb/  2016   abc  defg   23:45:54", "%d/  %b/%Y abcdefg %H:   %i:%S", MyDateTime(2016, 2, 1, 23, 45, 54, 0)},
-        {"01/Feb  /2016   ab cdefg 23:  45:54", "%d  /%b/%Y abc  defg %H:%i  :%S", MyDateTime{2016, 2, 1, 23, 45, 54, 0}},
+        {"01/Feb/  2016   abc  defg   23:45:54",
+         "%d/  %b/%Y abcdefg %H:   %i:%S",
+         MyDateTime(2016, 2, 1, 23, 45, 54, 0)},
+        {"01/Feb  /2016   ab cdefg 23:  45:54",
+         "%d  /%b/%Y abc  defg %H:%i  :%S",
+         MyDateTime{2016, 2, 1, 23, 45, 54, 0}},
 
         /// Cases collect from MySQL 8.0 document
         {"01,5,2013", "%d,%m,%Y", MyDateTime{2013, 5, 1, 0, 0, 0, 0}}, //
@@ -525,13 +607,15 @@ try
                 result_formatter.format(actual_time, actual_str);
                 EXPECT_EQ(*packed, expected->toPackedUInt())
                     << "[case=" << idx << "] "
-                    << "[fmt=" << fmt << "] [input=" << input << "] [expect=" << expect_str << "] [actual=" << actual_str << "]";
+                    << "[fmt=" << fmt << "] [input=" << input << "] [expect=" << expect_str
+                    << "] [actual=" << actual_str << "]";
             }
             else
             {
                 EXPECT_TRUE((bool)packed) //
                     << "[case=" << idx << "] "
-                    << "[fmt=" << fmt << "] [input=" << input << "] [expect=" << expect_str << "] [actual=<parse fail>]";
+                    << "[fmt=" << fmt << "] [input=" << input << "] [expect=" << expect_str
+                    << "] [actual=<parse fail>]";
             }
         }
         idx++;

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 #include <Debug/MockTiDB.h>
 #include <Debug/dbgFuncMockTiDBTable.h>
+#include <Debug/dbgTools.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/InterpreterCreateQuery.h>
 #include <Parsers/ASTExpressionList.h>
@@ -23,8 +24,8 @@
 #include <Parsers/ParserCreateQuery.h>
 #include <Parsers/ParserRenameQuery.h>
 #include <Parsers/parseQuery.h>
-#include <Storages/Transaction/KVStore.h>
-#include <Storages/Transaction/TMTContext.h>
+#include <Storages/KVStore/KVStore.h>
+#include <Storages/KVStore/TMTContext.h>
 #include <TiDB/Schema/SchemaSyncer.h>
 #include <fmt/core.h>
 
@@ -41,7 +42,8 @@ void MockTiDBTable::dbgFuncMockTiDBTable(Context & context, const ASTs & args, D
 {
     if (args.size() != 3 && args.size() != 4 && args.size() != 5)
         throw Exception(
-            "Args not matched, should be: database-name, table-name, schema-string [, handle_pk_name], [, engine-type(tmt|dt)]",
+            "Args not matched, should be: database-name, table-name, schema-string [, handle_pk_name], [, "
+            "engine-type(tmt|dt)]",
             ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
@@ -70,7 +72,8 @@ void MockTiDBTable::dbgFuncMockTiDBTable(Context & context, const ASTs & args, D
 
     auto tso = context.getTMTContext().getPDClient()->getTS();
 
-    TableID table_id = MockTiDB::instance().newTable(database_name, table_name, columns, tso, handle_pk_name, engine_type);
+    TableID table_id
+        = MockTiDB::instance().newTable(database_name, table_name, columns, tso, handle_pk_name, engine_type);
 
     output(fmt::format("mock table #{}", table_id));
 }
@@ -90,7 +93,9 @@ void MockTiDBTable::dbgFuncMockTiDBDB(Context &, const ASTs & args, DBGInvoker::
 void MockTiDBTable::dbgFuncMockTiDBPartition(Context & context, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 3 && args.size() != 4)
-        throw Exception("Args not matched, should be: database-name, table-name, partition-name", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, partition-name",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -110,7 +115,9 @@ void MockTiDBTable::dbgFuncMockTiDBPartition(Context & context, const ASTs & arg
 void MockTiDBTable::dbgFuncDropTiDBPartition(Context &, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name, partition-name", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, partition-name",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -139,7 +146,9 @@ void MockTiDBTable::dbgFuncDropTiDBDB(Context & context, const ASTs & args, DBGI
 void MockTiDBTable::dbgFuncDropTiDBTable(Context & context, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 2 && args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name[, drop-regions]", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name[, drop-regions]",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -170,7 +179,9 @@ void MockTiDBTable::dbgFuncDropTiDBTable(Context & context, const ASTs & args, D
 void MockTiDBTable::dbgFuncAddColumnToTiDBTable(Context & context, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name, 'col type'", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, 'col type'",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -183,7 +194,8 @@ void MockTiDBTable::dbgFuncAddColumnToTiDBTable(Context & context, const ASTs & 
     Expected expected;
     if (!schema_parser.parse(pos, col_ast, expected))
         throw Exception("Invalid TiDB table column", ErrorCodes::LOGICAL_ERROR);
-    ColumnsDescription cols = InterpreterCreateQuery::getColumnsDescription(typeid_cast<const ASTExpressionList &>(*col_ast), context);
+    ColumnsDescription cols
+        = InterpreterCreateQuery::getColumnsDescription(typeid_cast<const ASTExpressionList &>(*col_ast), context);
     if (cols.getAllPhysical().size() > 1)
         throw Exception("Not support multiple columns", ErrorCodes::LOGICAL_ERROR);
 
@@ -200,7 +212,9 @@ void MockTiDBTable::dbgFuncAddColumnToTiDBTable(Context & context, const ASTs & 
 void MockTiDBTable::dbgFuncDropColumnFromTiDBTable(Context & /*context*/, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name, column-name", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, column-name",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -213,10 +227,15 @@ void MockTiDBTable::dbgFuncDropColumnFromTiDBTable(Context & /*context*/, const 
     output(fmt::format("dropped column {}", column_name));
 }
 
-void MockTiDBTable::dbgFuncModifyColumnInTiDBTable(DB::Context & context, const DB::ASTs & args, DB::DBGInvoker::Printer output)
+void MockTiDBTable::dbgFuncModifyColumnInTiDBTable(
+    DB::Context & context,
+    const DB::ASTs & args,
+    DB::DBGInvoker::Printer output)
 {
     if (args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name, 'col type'", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, 'col type'",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -229,7 +248,8 @@ void MockTiDBTable::dbgFuncModifyColumnInTiDBTable(DB::Context & context, const 
     Expected expected;
     if (!schema_parser.parse(pos, col_ast, expected))
         throw Exception("Invalid TiDB table column", ErrorCodes::LOGICAL_ERROR);
-    ColumnsDescription cols = InterpreterCreateQuery::getColumnsDescription(typeid_cast<const ASTExpressionList &>(*col_ast), context);
+    ColumnsDescription cols
+        = InterpreterCreateQuery::getColumnsDescription(typeid_cast<const ASTExpressionList &>(*col_ast), context);
     if (cols.getAllPhysical().size() > 1)
         throw Exception("Not support multiple columns", ErrorCodes::LOGICAL_ERROR);
 
@@ -242,7 +262,9 @@ void MockTiDBTable::dbgFuncModifyColumnInTiDBTable(DB::Context & context, const 
 void MockTiDBTable::dbgFuncRenameColumnInTiDBTable(DB::Context &, const DB::ASTs & args, DB::DBGInvoker::Printer output)
 {
     if (args.size() != 4)
-        throw Exception("Args not matched, should be: database-name, table-name, old_col_name, new_col_name", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, old_col_name, new_col_name",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -257,7 +279,9 @@ void MockTiDBTable::dbgFuncRenameColumnInTiDBTable(DB::Context &, const DB::ASTs
 void MockTiDBTable::dbgFuncRenameTiDBTable(Context & /*context*/, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() != 3)
-        throw Exception("Args not matched, should be: database-name, table-name, new-table-name", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, new-table-name",
+            ErrorCodes::BAD_ARGUMENTS);
 
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
     const String & table_name = typeid_cast<const ASTIdentifier &>(*args[1]).name;
@@ -288,7 +312,7 @@ void MockTiDBTable::dbgFuncCleanUpRegions(DB::Context & context, const DB::ASTs 
     auto & region_table = context.getTMTContext().getRegionTable();
     {
         {
-            auto manage_lock = kvstore->genRegionReadLock();
+            auto manage_lock = kvstore->genRegionMgrReadLock();
             for (const auto & e : manage_lock.regions)
                 regions.emplace_back(e.first);
         }
@@ -302,9 +326,12 @@ void MockTiDBTable::dbgFuncCleanUpRegions(DB::Context & context, const DB::ASTs 
 void MockTiDBTable::dbgFuncCreateTiDBTables(Context & context, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() < 2)
-        throw Exception("Args not matched, should be: db_name, table_name, [table_name], ..., [table_name]", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: db_name, table_name, [table_name], ..., [table_name]",
+            ErrorCodes::BAD_ARGUMENTS);
     const String & database_name = typeid_cast<const ASTIdentifier &>(*args[0]).name;
-    auto db = context.getDatabase(database_name);
+    auto mapped_database_name = mappedDatabase(context, database_name);
+    auto db = context.getDatabase(mapped_database_name);
 
     std::vector<std::tuple<String, ColumnsDescription, String>> tables;
 
@@ -319,8 +346,9 @@ void MockTiDBTable::dbgFuncCreateTiDBTables(Context & context, const ASTs & args
         Expected expected;
         if (!schema_parser.parse(pos, columns_ast, expected))
             throw Exception("Invalid TiDB table schema", ErrorCodes::LOGICAL_ERROR);
-        ColumnsDescription columns
-            = InterpreterCreateQuery::getColumnsDescription(typeid_cast<const ASTExpressionList &>(*columns_ast), context);
+        ColumnsDescription columns = InterpreterCreateQuery::getColumnsDescription(
+            typeid_cast<const ASTExpressionList &>(*columns_ast),
+            context);
         tables.emplace_back(table_name, columns, "");
     }
     auto tso = context.getTMTContext().getPDClient()->getTS();
@@ -334,7 +362,10 @@ void MockTiDBTable::dbgFuncCreateTiDBTables(Context & context, const ASTs & args
 void MockTiDBTable::dbgFuncRenameTiDBTables(Context & /*context*/, const ASTs & args, DBGInvoker::Printer output)
 {
     if (args.size() % 3 != 0)
-        throw Exception("Args not matched, should be: database-name, table-name, new-table-name, ..., [database-name, table-name, new-table-name]", ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "Args not matched, should be: database-name, table-name, new-table-name, ..., [database-name, table-name, "
+            "new-table-name]",
+            ErrorCodes::BAD_ARGUMENTS);
     std::vector<std::tuple<std::string, std::string, std::string>> table_map;
     for (ASTs::size_type i = 0; i < args.size() / 3; i++)
     {

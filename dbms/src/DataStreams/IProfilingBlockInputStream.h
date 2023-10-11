@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ extern const int QUERY_WAS_CANCELLED;
 class QuotaForIntervals;
 class ProcessListElement;
 class IProfilingBlockInputStream;
+class AutoSpillTrigger;
 
 using ProfilingBlockInputStreamPtr = std::shared_ptr<IProfilingBlockInputStream>;
 
@@ -73,16 +74,6 @@ public:
     /// Get information about execution speed.
     const BlockStreamProfileInfo & getProfileInfo() const { return info; }
 
-    /** Get "total" values.
-      * The default implementation takes them from itself or from the first child source in which they are.
-      * The overridden method can perform some calculations. For example, apply an expression to the `totals` of the child source.
-      * There can be no total values - then an empty block is returned.
-      *
-      * Call this method only after all the data has been retrieved with `read`,
-      *  otherwise there will be problems if any data at the same time is computed in another thread.
-      */
-    virtual Block getTotals();
-
     /// The same for minimums and maximums.
     Block getExtremes();
 
@@ -95,6 +86,12 @@ public:
       * Note that the callback can be called from different threads.
       */
     void setProgressCallback(const ProgressCallback & callback);
+
+    /** Set auto spill trigger, the auto spill trigger will trigger auto spill based on
+     * query memory threshold or global memory threshold
+     * @param callback
+     */
+    void setAutoSpillTrigger(AutoSpillTrigger * auto_spill_trigger_);
 
 
     /** In this method:
@@ -168,23 +165,14 @@ public:
     };
 
     /** Set limitations that checked on each block. */
-    void setLimits(const LocalLimits & limits_)
-    {
-        limits = limits_;
-    }
+    void setLimits(const LocalLimits & limits_) { limits = limits_; }
 
-    const LocalLimits & getLimits() const
-    {
-        return limits;
-    }
+    const LocalLimits & getLimits() const { return limits; }
 
     /** Set the quota. If you set a quota on the amount of raw data,
       * then you should also set mode = LIMITS_TOTAL to LocalLimits with setLimits.
       */
-    void setQuota(QuotaForIntervals & quota_)
-    {
-        quota = &quota_;
-    }
+    void setQuota(QuotaForIntervals & quota_) { quota = &quota_; }
 
     /// Enable calculation of minimums and maximums by the result columns.
     void enableExtremes() { enabled_extremes = true; }
@@ -195,11 +183,10 @@ protected:
     std::atomic<bool> is_killed{false};
     ProgressCallback progress_callback;
     ProcessListElement * process_list_elem = nullptr;
+    AutoSpillTrigger * auto_spill_trigger = nullptr;
 
     /// Additional information that can be generated during the work process.
 
-    /// Total values during aggregation.
-    Block totals;
     /// Minimums and maximums. The first row of the block - minimums, the second - the maximums.
     Block extremes;
 
@@ -209,6 +196,8 @@ protected:
         std::unique_lock lock(children_mutex);
         children.push_back(child);
     }
+
+    uint64_t collectCPUTimeNsImpl(bool is_thread_runner) override;
 
 private:
     bool enabled_extremes = false;
@@ -242,7 +231,7 @@ private:
     /** Check limits and quotas.
       * But only those that can be checked within each separate stream.
       */
-    bool checkTimeLimit();
+    bool checkTimeLimit() const;
     void checkQuota(Block & block);
 
 
@@ -257,6 +246,7 @@ private:
                 if (f(*p_child))
                     return;
     }
+    void setProgressCallbackImpl(const ProgressCallback & callback, std::unordered_set<void *> & visited_nodes);
 };
 
 } // namespace DB

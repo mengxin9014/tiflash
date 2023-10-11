@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,21 +15,33 @@
 #pragma once
 
 #include <Flash/Coprocessor/CoprocessorReader.h>
-#include <Flash/Coprocessor/DAGContext.h>
 
 namespace DB
 {
+class CoprocessorReader;
+using CoprocessorReaderPtr = std::shared_ptr<CoprocessorReader>;
+class ExchangeReceiver;
+using ExchangeReceiverPtr = std::shared_ptr<ExchangeReceiver>;
+using ExchangeReceiverMap = std::unordered_map<String, ExchangeReceiverPtr>;
+
 class MPPReceiverSet
 {
 public:
     explicit MPPReceiverSet(const String & req_id)
         : log(Logger::get(req_id))
     {}
+    ~MPPReceiverSet()
+    {
+        /// close will close every receiver's internal MPMC queue and avoid blocking risk in waitAllConnectionsDone
+        close();
+    }
     void addExchangeReceiver(const String & executor_id, const ExchangeReceiverPtr & exchange_receiver);
     void addCoprocessorReader(const CoprocessorReaderPtr & coprocessor_reader);
     ExchangeReceiverPtr getExchangeReceiver(const String & executor_id) const;
     void cancel();
     void close();
+
+    int getExternalThreadCnt() const { return external_thread_cnt; }
 
 private:
     /// two kinds of receiver in MPP
@@ -38,6 +50,7 @@ private:
     ExchangeReceiverMap exchange_receiver_map;
     std::vector<CoprocessorReaderPtr> coprocessor_readers;
     const LoggerPtr log;
+    int external_thread_cnt = 0;
 };
 
 using MPPReceiverSetPtr = std::shared_ptr<MPPReceiverSet>;

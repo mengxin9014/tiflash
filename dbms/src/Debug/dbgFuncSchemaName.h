@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,6 +33,16 @@ void dbgFuncMappedDatabase(Context & context, const ASTs & args, DBGInvoker::Pri
 // Usage:
 //   ./storage-client.sh "DBGInvoke mapped_table(database_name, table_name[, qualify = 'true'])"
 void dbgFuncMappedTable(Context & context, const ASTs & args, DBGInvoker::Printer output);
+
+// Check the mapped underlying table name of a TiDB table exists or not.
+// Usage:
+//   ./storage-client.sh "DBGInvoke mapped_table_exists(database_name, table_name)"
+void dbgFuncTableExists(Context & context, const ASTs & args, DBGInvoker::Printer output);
+
+// Check the mapped underlying database name of a TiDB db exists or not.
+// Usage:
+//   ./storage-client.sh "DBGInvoke mapped_database_exists(database_name, table_name)"
+void dbgFuncDatabaseExists(Context & context, const ASTs & args, DBGInvoker::Printer output);
 
 // Run query using mapped table name. Use place holder $d and $t to specify database name and table name in query.
 // So far at most one database name and table name is supported.

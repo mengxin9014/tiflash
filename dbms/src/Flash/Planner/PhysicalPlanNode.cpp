@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 #include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Coprocessor/DAGPipeline.h>
 #include <Flash/Coprocessor/InterpreterUtils.h>
+#include <Flash/Pipeline/Pipeline.h>
+#include <Flash/Pipeline/PipelineBuilder.h>
+#include <Flash/Pipeline/Schedule/Events/Event.h>
 #include <Flash/Planner/PhysicalPlanHelper.h>
 #include <Flash/Planner/PhysicalPlanNode.h>
 #include <Interpreters/Context.h>
@@ -26,11 +29,13 @@ PhysicalPlanNode::PhysicalPlanNode(
     const String & executor_id_,
     const PlanType & type_,
     const NamesAndTypes & schema_,
+    const FineGrainedShuffle & fine_grained_shuffle_,
     const String & req_id)
     : executor_id(executor_id_)
     , type(type_)
     , schema(schema_)
-    , log(Logger::get(type_.toString(), req_id))
+    , fine_grained_shuffle(fine_grained_shuffle_)
+    , log(Logger::get(fmt::format("{}_{}_{}", req_id, type_.toString(), executor_id_)))
 {}
 
 String PhysicalPlanNode::toString()
@@ -52,6 +57,11 @@ String PhysicalPlanNode::toString()
         schema_to_string());
 }
 
+String PhysicalPlanNode::toSimpleString()
+{
+    return fmt::format("{}|{}", type.toString(), isTiDBOperator() ? executor_id : "NonTiDBOperator");
+}
+
 void PhysicalPlanNode::finalize()
 {
     finalize(DB::toNames(schema));
@@ -69,15 +79,53 @@ void PhysicalPlanNode::recordProfileStreams(DAGPipeline & pipeline, const Contex
     }
 }
 
-void PhysicalPlanNode::transform(DAGPipeline & pipeline, Context & context, size_t max_streams)
+void PhysicalPlanNode::buildBlockInputStream(DAGPipeline & pipeline, Context & context, size_t max_streams)
 {
-    transformImpl(pipeline, context, max_streams);
+    buildBlockInputStreamImpl(pipeline, context, max_streams);
     if (is_tidb_operator)
         recordProfileStreams(pipeline, context);
     if (is_restore_concurrency)
     {
         context.getDAGContext()->updateFinalConcurrency(pipeline.streams.size(), max_streams);
-        restoreConcurrency(pipeline, context.getDAGContext()->final_concurrency, log);
+        restoreConcurrency(
+            pipeline,
+            context.getDAGContext()->final_concurrency,
+            context.getSettingsRef().max_buffered_bytes_in_executor,
+            log);
     }
+}
+
+void PhysicalPlanNode::buildPipelineExecGroup(
+    PipelineExecutorContext & exec_context,
+    PipelineExecGroupBuilder & group_builder,
+    Context & context,
+    size_t concurrency)
+{
+    buildPipelineExecGroupImpl(exec_context, group_builder, context, concurrency);
+    if (is_tidb_operator)
+        context.getDAGContext()->addOperatorProfileInfos(executor_id, group_builder.getCurProfileInfos());
+}
+
+void PhysicalPlanNode::buildPipeline(
+    PipelineBuilder & builder,
+    Context & context,
+    PipelineExecutorContext & exec_context)
+{
+    RUNTIME_CHECK(childrenSize() <= 1);
+    if (childrenSize() == 1)
+        children(0)->buildPipeline(builder, context, exec_context);
+    builder.addPlanNode(shared_from_this());
+}
+
+EventPtr PhysicalPlanNode::sinkComplete(PipelineExecutorContext & exec_context)
+{
+    if (getFineGrainedShuffle().enable())
+        return nullptr;
+    return doSinkComplete(exec_context);
+}
+
+EventPtr PhysicalPlanNode::doSinkComplete(PipelineExecutorContext & /*exec_status*/)
+{
+    return nullptr;
 }
 } // namespace DB

@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@ include_directories (${CMAKE_CURRENT_BINARY_DIR})
 set(SRCS )
 
 add_executable (lexer lexer.cpp ${SRCS})
-target_link_libraries (lexer clickhouse_parsers)
+target_link_libraries (lexer tiflash_parsers)
 
 add_executable (select_parser select_parser.cpp ${SRCS})
-target_link_libraries (select_parser clickhouse_parsers)
+target_link_libraries (select_parser tiflash_parsers)
 
 add_executable (create_parser create_parser.cpp ${SRCS})
-target_link_libraries (create_parser clickhouse_parsers)
+target_link_libraries (create_parser tiflash_parsers)
 

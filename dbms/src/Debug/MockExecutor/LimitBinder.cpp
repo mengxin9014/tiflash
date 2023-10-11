@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,15 @@
 
 #include <Debug/MockExecutor/ExecutorBinder.h>
 #include <Debug/MockExecutor/LimitBinder.h>
+#include <Parsers/ASTLiteral.h>
 
 namespace DB::mock
 {
-bool LimitBinder::toTiPBExecutor(tipb::Executor * tipb_executor, int32_t collator_id, const MPPInfo & mpp_info, const Context & context)
+bool LimitBinder::toTiPBExecutor(
+    tipb::Executor * tipb_executor,
+    int32_t collator_id,
+    const MPPInfo & mpp_info,
+    const Context & context)
 {
     tipb_executor->set_tp(tipb::ExecType::TypeLimit);
     tipb_executor->set_executor_id(name);

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,7 +48,6 @@
 #include <Common/UnifiedLogFormatter.h>
 #include <Common/getMultipleKeysFromConfig.h>
 #include <Common/setThreadName.h>
-#include <Flash/Mpp/getMPPTaskTracingLog.h>
 #include <IO/ReadBufferFromFileDescriptor.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteBufferFromFileDescriptor.h>
@@ -149,10 +148,7 @@ struct Pipe
         }
     }
 
-    ~Pipe()
-    {
-        close();
-    }
+    ~Pipe() { close(); }
 };
 
 
@@ -170,10 +166,7 @@ static void call_default_signal_handler(int sig)
 
 
 using ThreadNumber = decltype(Poco::ThreadNumber::get());
-static const size_t buf_size
-    = sizeof(int)
-    + sizeof(siginfo_t)
-    + sizeof(ucontext_t)
+static const size_t buf_size = sizeof(int) + sizeof(siginfo_t) + sizeof(ucontext_t)
 #if USE_UNWIND
     + sizeof(unw_context_t)
 #endif
@@ -295,8 +288,7 @@ public:
     explicit SignalListener(BaseDaemon & daemon_)
         : log(&Logger::get("BaseDaemon"))
         , daemon(daemon_)
-    {
-    }
+    {}
 
     void run() override
     {
@@ -369,7 +361,8 @@ private:
         LOG_ERROR(log, "(from thread {}) {}", thread_num, message);
     }
 #if USE_UNWIND
-    void onFault(int sig, siginfo_t & info, ucontext_t & context, unw_context_t & unw_context, ThreadNumber thread_num) const
+    void onFault(int sig, siginfo_t & info, ucontext_t & context, unw_context_t & unw_context, ThreadNumber thread_num)
+        const
 #else
     void onFault(int sig, siginfo_t & info, ucontext_t & context, ThreadNumber thread_num) const
 #endif
@@ -616,11 +609,13 @@ static void terminate_handler()
         }
         catch (DB::Exception & e)
         {
-            log << "Code: " << e.code() << ", e.displayText() = " << e.displayText() << ", e.what() = " << e.what() << std::endl;
+            log << "Code: " << e.code() << ", e.displayText() = " << e.displayText() << ", e.what() = " << e.what()
+                << std::endl;
         }
         catch (Poco::Exception & e)
         {
-            log << "Code: " << e.code() << ", e.displayText() = " << e.displayText() << ", e.what() = " << e.what() << std::endl;
+            log << "Code: " << e.code() << ", e.displayText() = " << e.displayText() << ", e.what() = " << e.what()
+                << std::endl;
         }
         catch (const std::exception & e)
         {
@@ -630,8 +625,7 @@ static void terminate_handler()
         {
         }
 
-        log << "Stack trace:\n\n"
-            << StackTrace().toString() << std::endl;
+        log << "Stack trace:\n\n" << StackTrace().toString() << std::endl;
     }
     else
     {
@@ -696,6 +690,14 @@ static std::string normalize(const std::string & log_level)
 
 void BaseDaemon::reloadConfiguration()
 {
+    // when config-file is not specified and config.toml does not exist, we do not load config.
+    if (!config().has("config-file"))
+    {
+        Poco::File f("config.toml");
+        if (!f.exists())
+            return;
+    }
+
     /** If the program is not run in daemon mode and 'config-file' is not specified,
       *  then we use config from 'config.toml' file in current directory,
       *  but will log to console (or use parameters --log-file, --errorlog-file from command line)
@@ -750,12 +752,12 @@ void BaseDaemon::wakeup()
 
 void BaseDaemon::buildLoggers(Poco::Util::AbstractConfiguration & config)
 {
-    auto current_logger = config.getString("logger");
+    auto current_logger = config.getString("logger", "(null)");
     if (config_logger == current_logger)
         return;
     config_logger = current_logger;
 
-    bool is_daemon = config.getBool("application.runAsDaemon", true);
+    bool is_daemon = config.getBool("application.runAsDaemon", false);
 
     // Split log, error log and tracing log.
     Poco::AutoPtr<Poco::ReloadableSplitterChannel> split = new Poco::ReloadableSplitterChannel;
@@ -768,17 +770,21 @@ void BaseDaemon::buildLoggers(Poco::Util::AbstractConfiguration & config)
         std::cerr << "Logging " << log_level << " to " << log_path << std::endl;
 
         // Set up two channel chains.
-        Poco::AutoPtr<DB::UnifiedLogFormatter> pf = new DB::UnifiedLogFormatter();
+        Poco::AutoPtr<Poco::Formatter> pf = new DB::UnifiedLogFormatter<false>();
         Poco::AutoPtr<FormattingChannel> log = new FormattingChannel(pf);
         log_file = new Poco::TiFlashLogFileChannel;
         log_file->setProperty(Poco::FileChannel::PROP_PATH, Poco::Path(log_path).absolute().toString());
         log_file->setProperty(Poco::FileChannel::PROP_ROTATION, config.getRawString("logger.size", "100M"));
         log_file->setProperty(Poco::FileChannel::PROP_TIMES, "local");
         log_file->setProperty(Poco::FileChannel::PROP_ARCHIVE, "timestamp");
-        log_file->setProperty(Poco::FileChannel::PROP_COMPRESS, /*config.getRawString("logger.compress", "true")*/ "true");
+        log_file->setProperty(
+            Poco::FileChannel::PROP_COMPRESS,
+            /*config.getRawString("logger.compress", "true")*/ "true");
         log_file->setProperty(Poco::FileChannel::PROP_PURGECOUNT, config.getRawString("logger.count", "10"));
         log_file->setProperty(Poco::FileChannel::PROP_FLUSH, config.getRawString("logger.flush", "true"));
-        log_file->setProperty(Poco::FileChannel::PROP_ROTATEONOPEN, config.getRawString("logger.rotateOnOpen", "false"));
+        log_file->setProperty(
+            Poco::FileChannel::PROP_ROTATEONOPEN,
+            config.getRawString("logger.rotateOnOpen", "false"));
         log->setChannel(log_file);
         split->addChannel(log);
         log_file->open();
@@ -791,17 +797,21 @@ void BaseDaemon::buildLoggers(Poco::Util::AbstractConfiguration & config)
         std::cerr << "Logging errors to " << errorlog_path << std::endl;
         Poco::AutoPtr<Poco::LevelFilterChannel> level = new Poco::LevelFilterChannel;
         level->setLevel(Message::PRIO_NOTICE);
-        Poco::AutoPtr<DB::UnifiedLogFormatter> pf = new DB::UnifiedLogFormatter();
+        Poco::AutoPtr<Poco::Formatter> pf = new DB::UnifiedLogFormatter<false>();
         Poco::AutoPtr<FormattingChannel> errorlog = new FormattingChannel(pf);
         error_log_file = new Poco::TiFlashLogFileChannel;
         error_log_file->setProperty(Poco::FileChannel::PROP_PATH, Poco::Path(errorlog_path).absolute().toString());
         error_log_file->setProperty(Poco::FileChannel::PROP_ROTATION, config.getRawString("logger.size", "100M"));
         error_log_file->setProperty(Poco::FileChannel::PROP_TIMES, "local");
         error_log_file->setProperty(Poco::FileChannel::PROP_ARCHIVE, "timestamp");
-        error_log_file->setProperty(Poco::FileChannel::PROP_COMPRESS, /*config.getRawString("logger.compress", "true")*/ "true");
+        error_log_file->setProperty(
+            Poco::FileChannel::PROP_COMPRESS,
+            /*config.getRawString("logger.compress", "true")*/ "true");
         error_log_file->setProperty(Poco::FileChannel::PROP_PURGECOUNT, config.getRawString("logger.count", "10"));
         error_log_file->setProperty(Poco::FileChannel::PROP_FLUSH, config.getRawString("logger.flush", "true"));
-        error_log_file->setProperty(Poco::FileChannel::PROP_ROTATEONOPEN, config.getRawString("logger.rotateOnOpen", "false"));
+        error_log_file->setProperty(
+            Poco::FileChannel::PROP_ROTATEONOPEN,
+            config.getRawString("logger.rotateOnOpen", "false"));
         errorlog->setChannel(error_log_file);
         level->setChannel(errorlog);
         split->addChannel(level);
@@ -816,17 +826,21 @@ void BaseDaemon::buildLoggers(Poco::Util::AbstractConfiguration & config)
         /// to filter the tracing log.
         Poco::AutoPtr<Poco::SourceFilterChannel> source = new Poco::SourceFilterChannel;
         source->setSource(DB::tracing_log_source);
-        Poco::AutoPtr<DB::UnifiedLogFormatter> pf = new DB::UnifiedLogFormatter();
+        Poco::AutoPtr<Poco::Formatter> pf = new DB::UnifiedLogFormatter<false>();
         Poco::AutoPtr<FormattingChannel> tracing_log = new FormattingChannel(pf);
         tracing_log_file = new Poco::TiFlashLogFileChannel;
         tracing_log_file->setProperty(Poco::FileChannel::PROP_PATH, Poco::Path(tracing_log_path).absolute().toString());
         tracing_log_file->setProperty(Poco::FileChannel::PROP_ROTATION, config.getRawString("logger.size", "100M"));
         tracing_log_file->setProperty(Poco::FileChannel::PROP_TIMES, "local");
         tracing_log_file->setProperty(Poco::FileChannel::PROP_ARCHIVE, "timestamp");
-        tracing_log_file->setProperty(Poco::FileChannel::PROP_COMPRESS, /*config.getRawString("logger.compress", "true")*/ "true");
+        tracing_log_file->setProperty(
+            Poco::FileChannel::PROP_COMPRESS,
+            /*config.getRawString("logger.compress", "true")*/ "true");
         tracing_log_file->setProperty(Poco::FileChannel::PROP_PURGECOUNT, config.getRawString("logger.count", "10"));
         tracing_log_file->setProperty(Poco::FileChannel::PROP_FLUSH, config.getRawString("logger.flush", "true"));
-        tracing_log_file->setProperty(Poco::FileChannel::PROP_ROTATEONOPEN, config.getRawString("logger.rotateOnOpen", "false"));
+        tracing_log_file->setProperty(
+            Poco::FileChannel::PROP_ROTATEONOPEN,
+            config.getRawString("logger.rotateOnOpen", "false"));
         tracing_log->setChannel(tracing_log_file);
         source->setChannel(tracing_log);
         split->addChannel(source);
@@ -841,20 +855,29 @@ void BaseDaemon::buildLoggers(Poco::Util::AbstractConfiguration & config)
         Poco::AutoPtr<OwnPatternFormatter> pf = new OwnPatternFormatter(this, OwnPatternFormatter::ADD_LAYER_TAG);
         pf->setProperty("times", "local");
         Poco::AutoPtr<FormattingChannel> log = new FormattingChannel(pf);
-        syslog_channel = new Poco::SyslogChannel(commandName(), Poco::SyslogChannel::SYSLOG_CONS | Poco::SyslogChannel::SYSLOG_PID, Poco::SyslogChannel::SYSLOG_DAEMON);
+        syslog_channel = new Poco::SyslogChannel(
+            commandName(),
+            Poco::SyslogChannel::SYSLOG_CONS | Poco::SyslogChannel::SYSLOG_PID,
+            Poco::SyslogChannel::SYSLOG_DAEMON);
         log->setChannel(syslog_channel);
         split->addChannel(log);
         syslog_channel->open();
     }
 
-    if (config.getBool("logger.console", false) || (!config.hasProperty("logger.console") && !is_daemon && (isatty(STDIN_FILENO) || isatty(STDERR_FILENO))))
+    bool should_log_to_console = isatty(STDIN_FILENO) || isatty(STDERR_FILENO);
+    bool enable_colors = isatty(STDERR_FILENO);
+
+    if (config.getBool("logger.console", false)
+        || (!config.hasProperty("logger.console") && !is_daemon && should_log_to_console))
     {
         Poco::AutoPtr<ConsoleChannel> file = new ConsoleChannel;
-        Poco::AutoPtr<OwnPatternFormatter> pf = new OwnPatternFormatter(this);
-        pf->setProperty("times", "local");
+        Poco::AutoPtr<Poco::Formatter> pf;
+        if (enable_colors)
+            pf = new DB::UnifiedLogFormatter<true>();
+        else
+            pf = new DB::UnifiedLogFormatter<false>();
         Poco::AutoPtr<FormattingChannel> log = new FormattingChannel(pf);
         log->setChannel(file);
-        logger().warning("Logging " + log_level + " to console");
         split->addChannel(log);
     }
 
@@ -1003,8 +1026,6 @@ void BaseDaemon::initialize(Application & self)
         umask(umask_num);
     }
 
-    ConfigProcessor(config_path).savePreprocessedConfig(loaded_config);
-
     /// Write core dump on crash.
     {
         struct rlimit rlim
@@ -1067,14 +1088,12 @@ void BaseDaemon::initialize(Application & self)
     if (!log_path.empty())
     {
         std::string path = createDirectory(log_path);
-        if (is_daemon
-            && chdir(path.c_str()) != 0)
+        if (is_daemon && chdir(path.c_str()) != 0)
             throw Poco::Exception("Cannot change directory to " + path);
     }
     else
     {
-        if (is_daemon
-            && chdir("/tmp") != 0)
+        if (is_daemon && chdir("/tmp") != 0)
             throw Poco::Exception("Cannot change directory to /tmp");
     }
 
@@ -1113,28 +1132,27 @@ void BaseDaemon::initialize(Application & self)
     }
 
     /// Setup signal handlers.
-    auto add_signal_handler =
-        [](const std::vector<int> & signals, signal_function handler) {
-            struct sigaction sa
-            {
-            };
-            memset(&sa, 0, sizeof(sa));
-            sa.sa_sigaction = handler;
-            sa.sa_flags = SA_SIGINFO;
+    auto add_signal_handler = [](const std::vector<int> & signals, signal_function handler) {
+        struct sigaction sa
+        {
+        };
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = handler;
+        sa.sa_flags = SA_SIGINFO;
 
-            {
-                if (sigemptyset(&sa.sa_mask))
+        {
+            if (sigemptyset(&sa.sa_mask))
+                throw Poco::Exception("Cannot set signal handler.");
+
+            for (auto signal : signals)
+                if (sigaddset(&sa.sa_mask, signal))
                     throw Poco::Exception("Cannot set signal handler.");
 
-                for (auto signal : signals)
-                    if (sigaddset(&sa.sa_mask, signal))
-                        throw Poco::Exception("Cannot set signal handler.");
-
-                for (auto signal : signals)
-                    if (sigaction(signal, &sa, nullptr))
-                        throw Poco::Exception("Cannot set signal handler.");
-            }
-        };
+            for (auto signal : signals)
+                if (sigaction(signal, &sa, nullptr))
+                    throw Poco::Exception("Cannot set signal handler.");
+        }
+    };
 
     add_signal_handler({SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGPIPE}, faultSignalHandler);
     add_signal_handler({SIGHUP, SIGUSR1}, closeLogsSignalHandler);
@@ -1157,11 +1175,12 @@ void BaseDaemon::initialize(Application & self)
 
 void BaseDaemon::logRevision() const
 {
-    Logger::root().information("Welcome to TiFlash");
-    Logger::root().information("Starting daemon with revision " + Poco::NumberFormatter::format(ClickHouseRevision::get()));
+    auto * log = &Logger::root();
+    LOG_INFO(log, "Welcome to TiFlash");
+    LOG_INFO(log, "Starting daemon with revision " + Poco::NumberFormatter::format(ClickHouseRevision::get()));
     std::stringstream ss;
     TiFlashBuildInfo::outputDetail(ss);
-    Logger::root().information("TiFlash build info: " + ss.str());
+    LOG_INFO(log, "TiFlash build info: {}", ss.str());
 }
 
 /// Used for exitOnTaskError()
@@ -1170,7 +1189,11 @@ void BaseDaemon::handleNotification(Poco::TaskFailedNotification * _tfn)
     task_failed = true;
     AutoPtr<Poco::TaskFailedNotification> fn(_tfn);
     Logger * lg = &(logger());
-    LOG_ERROR(lg, "Task '{}' failed. Daemon is shutting down. Reason - {}", fn->task()->name(), fn->reason().displayText());
+    LOG_ERROR(
+        lg,
+        "Task '{}' failed. Daemon is shutting down. Reason - {}",
+        fn->task()->name(),
+        fn->reason().displayText());
     ServerApplication::terminate();
 }
 
@@ -1178,40 +1201,35 @@ void BaseDaemon::defineOptions(Poco::Util::OptionSet & _options)
 {
     Poco::Util::ServerApplication::defineOptions(_options);
 
-    _options.addOption(
-        Poco::Util::Option("config-file", "C", "load configuration from a given file")
-            .required(false)
-            .repeatable(false)
-            .argument("<file>")
-            .binding("config-file"));
+    _options.addOption(Poco::Util::Option("config-file", "C", "load configuration from a given file")
+                           .required(false)
+                           .repeatable(false)
+                           .argument("<file>")
+                           .binding("config-file"));
 
-    _options.addOption(
-        Poco::Util::Option("log-file", "L", "use given log file")
-            .required(false)
-            .repeatable(false)
-            .argument("<file>")
-            .binding("logger.log"));
+    _options.addOption(Poco::Util::Option("log-file", "L", "use given log file")
+                           .required(false)
+                           .repeatable(false)
+                           .argument("<file>")
+                           .binding("logger.log"));
 
-    _options.addOption(
-        Poco::Util::Option("errorlog-file", "E", "use given log file for errors only")
-            .required(false)
-            .repeatable(false)
-            .argument("<file>")
-            .binding("logger.errorlog"));
+    _options.addOption(Poco::Util::Option("errorlog-file", "E", "use given log file for errors only")
+                           .required(false)
+                           .repeatable(false)
+                           .argument("<file>")
+                           .binding("logger.errorlog"));
 
-    _options.addOption(
-        Poco::Util::Option("tracing-log-file", "T", "use given log file for mpp task tracing only")
-            .required(false)
-            .repeatable(false)
-            .argument("<file>")
-            .binding("logger.tracing_log"));
+    _options.addOption(Poco::Util::Option("tracing-log-file", "T", "use given log file for mpp task tracing only")
+                           .required(false)
+                           .repeatable(false)
+                           .argument("<file>")
+                           .binding("logger.tracing_log"));
 
-    _options.addOption(
-        Poco::Util::Option("pid-file", "P", "use given pidfile")
-            .required(false)
-            .repeatable(false)
-            .argument("<file>")
-            .binding("pid"));
+    _options.addOption(Poco::Util::Option("pid-file", "P", "use given pidfile")
+                           .required(false)
+                           .repeatable(false)
+                           .argument("<file>")
+                           .binding("pid"));
 }
 
 bool isPidRunning(pid_t pid)
@@ -1233,16 +1251,16 @@ void BaseDaemon::PID::seed(const std::string & file_)
             {
                 in >> pid_read;
                 if (pid_read && isPidRunning(pid_read))
-                    throw Poco::Exception("Pid file exists and program running with pid = " + std::to_string(pid_read) + ", should not start daemon.");
+                    throw Poco::Exception(
+                        "Pid file exists and program running with pid = " + std::to_string(pid_read)
+                        + ", should not start daemon.");
             }
         }
         std::cerr << "Old pid file exists (with pid = " << pid_read << "), removing." << std::endl;
         poco_file.remove();
     }
 
-    int fd = open(file.c_str(),
-                  O_CREAT | O_EXCL | O_WRONLY,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    int fd = open(file.c_str(), O_CREAT | O_EXCL | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
 
     if (-1 == fd)
     {

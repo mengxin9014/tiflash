@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,12 +21,12 @@
 #include <Flash/FlashService.h>
 #include <Flash/Mpp/GRPCCompletionQueuePool.h>
 #include <Server/RaftConfigParser.h>
-#include <Storages/Transaction/PDTiKVClient.h>
+#include <Storages/KVStore/TiKVHelpers/PDTiKVClient.h>
+#include <grpc/grpc_security.h>
 
 
 namespace DB
 {
-using MockStorage = tests::MockStorage;
 using MockMPPServerInfo = tests::MockMPPServerInfo;
 
 class FlashGrpcServerHolder
@@ -35,12 +35,11 @@ public:
     FlashGrpcServerHolder(
         Context & context,
         Poco::Util::LayeredConfiguration & config_,
-        TiFlashSecurityConfig & security_config,
         const TiFlashRaftConfig & raft_config,
         const LoggerPtr & log_);
     ~FlashGrpcServerHolder();
 
-    void setMockStorage(MockStorage & mock_storage);
+    void setMockStorage(MockStorage * mock_storage);
     void setMockMPPServerInfo(MockMPPServerInfo info);
 
     std::unique_ptr<FlashService> & flashService();
@@ -54,7 +53,8 @@ private:
     // cqs and notify_cqs are used for processing async grpc events (currently only EstablishMPPConnection).
     std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> cqs;
     std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> notify_cqs;
-    std::shared_ptr<ThreadManager> thread_manager;
+    std::vector<std::thread> cq_workers;
+    std::vector<std::thread> notify_cq_workers;
     CollectProcInfoBackgroundTask background_task;
 };
 

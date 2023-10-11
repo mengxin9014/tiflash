@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@
 #pragma once
 
 #include <common/defines.h>
+#include <common/types.h>
 
-#define DBMS_NAME "ClickHouse"
+#define DBMS_NAME "TiFlash"
 #define DBMS_VERSION_MAJOR 1
 #define DBMS_VERSION_MINOR 1
 
 #define DBMS_DEFAULT_HOST "localhost"
 #define DBMS_DEFAULT_PORT 9000
 #define DBMS_DEFAULT_SECURE_PORT 9440
-#define DBMS_DEFAULT_HTTP_PORT 8123
 #define DBMS_DEFAULT_CONNECT_TIMEOUT_SEC 10
 #define DBMS_DEFAULT_CONNECT_TIMEOUT_WITH_FAILOVER_MS 50
 #define DBMS_DEFAULT_SEND_TIMEOUT_SEC 300
@@ -48,6 +48,14 @@
 #define DEFAULT_MPP_TASK_RUNNING_TIMEOUT (DEFAULT_MPP_TASK_TIMEOUT + 30)
 #define DEFAULT_MPP_TASK_WAITING_TIMEOUT 36000
 
+// Timeout for building one disagg task in the TiFlash write node.
+// Including read index / wait index / generate segments snapshots.
+static constexpr UInt64 DEFAULT_DISAGG_TASK_BUILD_TIMEOUT_SEC = 60;
+// Timeout for how long one disagg task is valid in the TiFlash write node.
+// It is now a short period to avoid long stale snapshots causing system
+// instable.
+static constexpr UInt64 DEFAULT_DISAGG_TASK_TIMEOUT_SEC = 5 * 60;
+
 #define DEFAULT_DAG_RECORDS_PER_CHUNK 1024L
 #define DEFAULT_BATCH_SEND_MIN_LIMIT (-1)
 
@@ -55,6 +63,8 @@
   * Smaller values give better cache locality, less consumption of RAM, but more overhead to process the query.
   */
 #define DEFAULT_BLOCK_SIZE 65536
+
+constexpr size_t DEFAULT_BLOCK_BYTES = DEFAULT_BLOCK_SIZE * 256; // 256B per row, total 16MB.
 
 /** Which blocks should be formed for insertion into the table, if we control the formation of blocks.
   * (Sometimes the blocks are inserted exactly such blocks that have been read / transmitted from the outside, and this parameter does not affect their size.)
@@ -95,16 +105,11 @@
 
 #define DEFAULT_QUERY_LOG_FLUSH_INTERVAL_MILLISECONDS 7500
 
-#define DEFAULT_HTTP_READ_BUFFER_TIMEOUT 1800
-#define DEFAULT_HTTP_READ_BUFFER_CONNECTION_TIMEOUT 1
-
 #define PLATFORM_NOT_SUPPORTED "The only supported platforms are x86_64 and AArch64 (work in progress)"
 
-#define DEFAULT_MARK_CACHE_SIZE (5ULL * 1024 * 1024 * 1024)
+#define DEFAULT_MARK_CACHE_SIZE (1ULL * 1024 * 1024 * 1024)
 
 #define DEFAULT_METRICS_PORT 8234
-
-#define DEFAULT_HTTP_PORT 8123
 
 #if !defined(__x86_64__) && !defined(__aarch64__)
 //    #error PLATFORM_NOT_SUPPORTED

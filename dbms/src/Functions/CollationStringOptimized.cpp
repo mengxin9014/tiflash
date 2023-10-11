@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,9 +23,7 @@
 #include <limits>
 
 #ifdef TIFLASH_ENABLE_AVX_SUPPORT
-#ifndef TIFLASH_USE_AVX2_COMPILE_FLAG
-static_assert(false, "`dbms/src/Functions/CollationStringOptimized.cpp` need flag `-mavx2` to inline related functions");
-#endif
+ASSERT_USE_AVX2_COMPILE_FLAG
 #endif
 
 namespace DB

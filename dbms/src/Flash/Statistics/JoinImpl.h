@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,10 +25,7 @@ struct JoinImpl
 
     static constexpr auto type = "Join";
 
-    static bool isMatch(const tipb::Executor * executor)
-    {
-        return executor->has_join();
-    }
+    static bool isMatch(const tipb::Executor * executor) { return executor->has_join(); }
 };
 
 using JoinStatisticsBase = ExecutorStatistics<JoinImpl>;
@@ -39,10 +36,10 @@ public:
     JoinStatistics(const tipb::Executor * executor, DAGContext & dag_context_);
 
 private:
-    size_t hash_table_bytes = 0;
+    size_t peak_build_bytes_usage = 0;
     String build_side_child;
-
-    BaseRuntimeStatistics non_joined_base;
+    bool is_spill_enabled = false;
+    bool is_spilled = false;
 
     BaseRuntimeStatistics join_build_base;
 

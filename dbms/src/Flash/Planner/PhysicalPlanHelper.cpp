@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 
 namespace DB::PhysicalPlanHelper
 {
-ExpressionActionsPtr newActions(const Block & input_block, const Context & context)
+ExpressionActionsPtr newActions(const Block & input_block)
 {
     const ColumnsWithTypeAndName & actions_input_columns = input_block.getColumnsWithTypeAndName();
-    return std::make_shared<ExpressionActions>(actions_input_columns, context.getSettingsRef());
+    return std::make_shared<ExpressionActions>(actions_input_columns);
 }
 
-ExpressionActionsPtr newActions(const NamesAndTypes & input_columns, const Context & context)
+ExpressionActionsPtr newActions(const NamesAndTypes & input_columns)
 {
     NamesAndTypesList actions_input_column;
     std::unordered_set<String> column_name_set;
@@ -34,7 +34,7 @@ ExpressionActionsPtr newActions(const NamesAndTypes & input_columns, const Conte
             column_name_set.emplace(col.name);
         }
     }
-    return std::make_shared<ExpressionActions>(actions_input_column, context.getSettingsRef());
+    return std::make_shared<ExpressionActions>(actions_input_column);
 }
 
 NamesAndTypes addSchemaProjectAction(
@@ -42,8 +42,8 @@ NamesAndTypes addSchemaProjectAction(
     const NamesAndTypes & before_schema,
     const String & column_prefix)
 {
-    assert(expr_actions);
-    assert(!before_schema.empty());
+    RUNTIME_CHECK(expr_actions);
+    RUNTIME_CHECK(!before_schema.empty());
 
     NamesAndTypes after_schema = before_schema;
     NamesWithAliases project_aliases;
@@ -64,11 +64,9 @@ NamesAndTypes addSchemaProjectAction(
     return after_schema;
 }
 
-void addParentRequireProjectAction(
-    const ExpressionActionsPtr & expr_actions,
-    const Names & parent_require)
+void addParentRequireProjectAction(const ExpressionActionsPtr & expr_actions, const Names & parent_require)
 {
-    assert(expr_actions);
+    RUNTIME_CHECK(expr_actions);
     NamesWithAliases project_aliases;
     {
         std::unordered_set<String> column_name_set;

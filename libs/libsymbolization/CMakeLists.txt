@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ add_custom_command(OUTPUT ${_SYMBOLIZATION_LIBRARY}
                 "${_SYMBOLIZATION_HEADERS}"
                 "${_SYMBOLIZATION_SOURCE_DIR}/Cargo.lock"
                 "${_SYMBOLIZATION_SOURCE_DIR}/Cargo.toml"
-                "${_SYMBOLIZATION_SOURCE_DIR}/rust-toolchain")
+                "${TiFlash_SOURCE_DIR}/rust-toolchain")
 
 add_custom_target(symbolization ALL DEPENDS ${_SYMBOLIZATION_LIBRARY})
 add_library(libsymbolization STATIC IMPORTED GLOBAL)

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 #include <Common/Exception.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsDateTime.h>
-#include <Interpreters/Context.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
@@ -37,37 +36,43 @@ try
     const String func_name = TiDBLastDayTransformerImpl<DataTypeMyDate::FieldType>::name;
 
     // Ignore invalid month error
-    DAGContext * dag_context = context.getDAGContext();
-    UInt64 ori_flags = dag_context->getFlags();
-    dag_context->addFlag(TiDBSQLFlags::TRUNCATE_AS_WARNING);
-    dag_context->clearWarnings();
+    auto & dag_context = getDAGContext();
+    UInt64 ori_flags = dag_context.getFlags();
+    dag_context.addFlag(TiDBSQLFlags::TRUNCATE_AS_WARNING);
+    dag_context.clearWarnings();
 
     // nullable column test
     ASSERT_COLUMN_EQ(
-        createColumn<Nullable<MyDate>>({MyDate{2001, 2, 28}.toPackedUInt(),
-                                        MyDate{2000, 2, 29}.toPackedUInt(),
-                                        MyDate{2000, 6, 30}.toPackedUInt(),
-                                        MyDate{2000, 5, 31}.toPackedUInt(),
-                                        {}}),
-        executeFunction(func_name,
-                        {createColumn<MyDate>({MyDate{2001, 2, 10}.toPackedUInt(),
-                                               MyDate{2000, 2, 10}.toPackedUInt(),
-                                               MyDate{2000, 6, 10}.toPackedUInt(),
-                                               MyDate{2000, 5, 10}.toPackedUInt(),
-                                               MyDate{2000, 0, 10}.toPackedUInt()})}));
+        createColumn<Nullable<MyDate>>(
+            {MyDate{2001, 2, 28}.toPackedUInt(),
+             MyDate{2000, 2, 29}.toPackedUInt(),
+             MyDate{2000, 6, 30}.toPackedUInt(),
+             MyDate{2000, 5, 31}.toPackedUInt(),
+             {}}),
+        executeFunction(
+            func_name,
+            {createColumn<MyDate>(
+                {MyDate{2001, 2, 10}.toPackedUInt(),
+                 MyDate{2000, 2, 10}.toPackedUInt(),
+                 MyDate{2000, 6, 10}.toPackedUInt(),
+                 MyDate{2000, 5, 10}.toPackedUInt(),
+                 MyDate{2000, 0, 10}.toPackedUInt()})}));
 
     ASSERT_COLUMN_EQ(
-        createColumn<Nullable<MyDate>>({MyDate{2001, 2, 28}.toPackedUInt(),
-                                        MyDate{2000, 2, 29}.toPackedUInt(),
-                                        MyDate{2000, 6, 30}.toPackedUInt(),
-                                        MyDate{2000, 5, 31}.toPackedUInt(),
-                                        {}}),
-        executeFunction(func_name,
-                        {createColumn<MyDateTime>({MyDateTime{2001, 2, 10, 10, 10, 10, 0}.toPackedUInt(),
-                                                   MyDateTime{2000, 2, 10, 10, 10, 10, 0}.toPackedUInt(),
-                                                   MyDateTime{2000, 6, 10, 10, 10, 10, 0}.toPackedUInt(),
-                                                   MyDateTime{2000, 5, 10, 10, 10, 10, 0}.toPackedUInt(),
-                                                   MyDateTime{2000, 0, 10, 10, 10, 10, 0}.toPackedUInt()})}));
+        createColumn<Nullable<MyDate>>(
+            {MyDate{2001, 2, 28}.toPackedUInt(),
+             MyDate{2000, 2, 29}.toPackedUInt(),
+             MyDate{2000, 6, 30}.toPackedUInt(),
+             MyDate{2000, 5, 31}.toPackedUInt(),
+             {}}),
+        executeFunction(
+            func_name,
+            {createColumn<MyDateTime>(
+                {MyDateTime{2001, 2, 10, 10, 10, 10, 0}.toPackedUInt(),
+                 MyDateTime{2000, 2, 10, 10, 10, 10, 0}.toPackedUInt(),
+                 MyDateTime{2000, 6, 10, 10, 10, 10, 0}.toPackedUInt(),
+                 MyDateTime{2000, 5, 10, 10, 10, 10, 0}.toPackedUInt(),
+                 MyDateTime{2000, 0, 10, 10, 10, 10, 0}.toPackedUInt()})}));
 
     // const test
     UInt64 input[] = {
@@ -88,28 +93,26 @@ try
     {
         ASSERT_COLUMN_EQ(
             createConstColumn<Nullable<MyDate>>(3, output[i]),
-            executeFunction(func_name,
-                            {createConstColumn<MyDate>(3, input[i])}));
+            executeFunction(func_name, {createConstColumn<MyDate>(3, input[i])}));
 
         ASSERT_COLUMN_EQ(
             createConstColumn<Nullable<MyDate>>(3, output[i]),
-            executeFunction(func_name,
-                            {createConstColumn<Nullable<MyDate>>(3, input[i])}));
+            executeFunction(func_name, {createConstColumn<Nullable<MyDate>>(3, input[i])}));
     }
 
     // const nullable test
     ASSERT_COLUMN_EQ(
         createConstColumn<Nullable<MyDate>>(3, {}),
-        executeFunction(func_name,
-                        {createConstColumn<Nullable<MyDate>>(3, {})}));
+        executeFunction(func_name, {createConstColumn<Nullable<MyDate>>(3, {})}));
 
     // special const test, month is zero.
     ASSERT_COLUMN_EQ(
         createConstColumn<Nullable<MyDate>>(3, {}),
-        executeFunction(func_name,
-                        {createConstColumn<MyDate>(3, MyDateTime{2000, 0, 10, 10, 10, 10, 0}.toPackedUInt())}));
+        executeFunction(
+            func_name,
+            {createConstColumn<MyDate>(3, MyDateTime{2000, 0, 10, 10, 10, 10, 0}.toPackedUInt())}));
 
-    dag_context->setFlags(ori_flags);
+    dag_context.setFlags(ori_flags);
 }
 CATCH
 

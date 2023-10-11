@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 #include <Columns/ColumnConst.h>
 #include <Common/Exception.h>
 #include <Functions/FunctionsDateTime.h>
-#include <Interpreters/Context.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
@@ -37,7 +36,7 @@ TEST_F(TestUnixTimestamp, TestInputType)
 try
 {
     /// set timezone to UTC
-    context.getTimezoneInfo().resetByTimezoneName("UTC");
+    context->getTimezoneInfo().resetByTimezoneName("UTC");
 
     std::vector<DataTypeMyDate::FieldType> date_data{
         /// zero date
@@ -69,7 +68,8 @@ try
         MyDateTime(2038, 1, 19, 3, 14, 7, 999999).toPackedUInt(),
         MyDateTime(2038, 1, 19, 3, 14, 8, 000000).toPackedUInt(),
     };
-    std::vector<String> date_time_with_fsp_result = {"0.000000", "0.000000", "0.000000", "1.000001", "1602328271.123456", "2147483647.999999", "0.000000"};
+    std::vector<String> date_time_with_fsp_result
+        = {"0.000000", "0.000000", "0.000000", "1.000001", "1602328271.123456", "2147483647.999999", "0.000000"};
 
     /// case 1, func(const)
     ASSERT_COLUMN_EQ(
@@ -83,20 +83,28 @@ try
         executeFunction(func_name_dec, createConstColumn<MyDateTime>(std::make_tuple(0), 10, date_time_data[0])));
     ASSERT_COLUMN_EQ(
         createConstColumn<Decimal64>(std::make_tuple(18, 6), 10, date_time_with_fsp_result[0]),
-        executeFunction(func_name_dec, createConstColumn<MyDateTime>(std::make_tuple(6), 10, date_time_with_fsp_data[0])));
+        executeFunction(
+            func_name_dec,
+            createConstColumn<MyDateTime>(std::make_tuple(6), 10, date_time_with_fsp_data[0])));
     /// case 2, func(nullable(not null const))
     ASSERT_COLUMN_EQ(
         createConstColumn<UInt64>(10, date_result[0]),
         executeFunction(func_name_int, createConstColumn<Nullable<MyDate>>(10, date_data[0])));
     ASSERT_COLUMN_EQ(
         createConstColumn<UInt64>(10, date_time_int_result[0]),
-        executeFunction(func_name_int, createConstColumn<Nullable<MyDateTime>>(std::make_tuple(0), 10, date_time_data[0])));
+        executeFunction(
+            func_name_int,
+            createConstColumn<Nullable<MyDateTime>>(std::make_tuple(0), 10, date_time_data[0])));
     ASSERT_COLUMN_EQ(
         createConstColumn<Decimal64>(std::make_tuple(12, 0), 10, date_time_decimal_result[0]),
-        executeFunction(func_name_dec, createConstColumn<Nullable<MyDateTime>>(std::make_tuple(0), 10, date_time_data[0])));
+        executeFunction(
+            func_name_dec,
+            createConstColumn<Nullable<MyDateTime>>(std::make_tuple(0), 10, date_time_data[0])));
     ASSERT_COLUMN_EQ(
         createConstColumn<Decimal64>(std::make_tuple(18, 6), 10, date_time_with_fsp_result[0]),
-        executeFunction(func_name_dec, createConstColumn<Nullable<MyDateTime>>(std::make_tuple(6), 10, date_time_with_fsp_data[0])));
+        executeFunction(
+            func_name_dec,
+            createConstColumn<Nullable<MyDateTime>>(std::make_tuple(6), 10, date_time_with_fsp_data[0])));
     /// case 3, func(nullable(null const))
     ASSERT_COLUMN_EQ(
         createConstColumn<Nullable<UInt64>>(10, {}),
@@ -145,14 +153,16 @@ try
         executeFunction(func_name_dec, createNullableColumn<MyDateTime>(std::make_tuple(0), date_time_data, null_map)));
     ASSERT_COLUMN_EQ(
         createNullableColumn<Decimal64>(std::make_tuple(18, 6), date_time_with_fsp_result, null_map),
-        executeFunction(func_name_dec, createNullableColumn<MyDateTime>(std::make_tuple(6), date_time_with_fsp_data, null_map)));
+        executeFunction(
+            func_name_dec,
+            createNullableColumn<MyDateTime>(std::make_tuple(6), date_time_with_fsp_data, null_map)));
 }
 CATCH
 TEST_F(TestUnixTimestamp, TestTimezone)
 try
 {
     /// name based timezone
-    context.getTimezoneInfo().resetByTimezoneName("Asia/Shanghai");
+    context->getTimezoneInfo().resetByTimezoneName("Asia/Shanghai");
     std::vector<DataTypeMyDateTime::FieldType> date_time_data{
         /// min-max valid timestamp
         MyDateTime(1970, 1, 1, 8, 0, 0, 0).toPackedUInt(),
@@ -174,8 +184,28 @@ try
         MyDateTime(1990, 9, 16, 1, 59, 59, 0).toPackedUInt(),
         MyDateTime(1990, 9, 16, 2, 0, 0, 0).toPackedUInt(),
     };
-    std::vector<UInt64> date_time_int_result{0, 1, 2147483647ull, 0, 640115999ull, 640116000ull, 653414399ull, 653418000ull, 653421599ull, 653421600ull};
-    std::vector<String> date_time_decimal_result{"0", "1", "2147483647", "0", "640115999", "640116000", "653414399", "653418000", "653421599", "653421600"};
+    std::vector<UInt64> date_time_int_result{
+        0,
+        1,
+        2147483647ull,
+        0,
+        640115999ull,
+        640116000ull,
+        653414399ull,
+        653418000ull,
+        653421599ull,
+        653421600ull};
+    std::vector<String> date_time_decimal_result{
+        "0",
+        "1",
+        "2147483647",
+        "0",
+        "640115999",
+        "640116000",
+        "653414399",
+        "653418000",
+        "653421599",
+        "653421600"};
     ASSERT_COLUMN_EQ(
         createColumn<UInt64>(date_time_int_result),
         executeFunction(func_name_int, createColumn<MyDateTime>(date_time_data)));
@@ -183,7 +213,7 @@ try
         createColumn<Decimal64>(std::make_tuple(12, 0), date_time_decimal_result),
         executeFunction(func_name_dec, createColumn<MyDateTime>(date_time_data)));
 
-    context.getTimezoneInfo().resetByTimezoneName("America/Santiago");
+    context->getTimezoneInfo().resetByTimezoneName("America/Santiago");
     date_time_data = {
         /// min-max valid timestamp
         MyDateTime(1969, 12, 31, 21, 0, 0, 0).toPackedUInt(),
@@ -201,13 +231,33 @@ try
         MyDateTime(2022, 4, 2, 23, 59, 59, 0).toPackedUInt(),
         MyDateTime(2022, 4, 3, 0, 0, 0, 0).toPackedUInt(),
         /// When local standard time is about to reach
-        /// Sunday, 4 September 2022, 00:00:00 clocks are turned forward 1 hour to
-        /// Sunday, 4 September 2022, 01:00:00 local daylight time instead.
-        MyDateTime(2022, 9, 3, 23, 59, 59, 0).toPackedUInt(),
-        MyDateTime(2022, 9, 4, 1, 0, 0, 0).toPackedUInt(),
+        /// Sunday, 5 September 2021, 00:00:00 clocks are turned forward 1 hour to
+        /// Sunday, 5 September 2021, 01:00:00 local daylight time instead.
+        MyDateTime(2021, 9, 4, 23, 59, 59, 0).toPackedUInt(),
+        MyDateTime(2021, 9, 5, 1, 0, 0, 0).toPackedUInt(),
     };
-    date_time_int_result = {0, 1, 2147483647ull, 0, 1648951199ull, 1648954800ull, 1648958399ull, 1648958400ull, 1662263999ull, 1662264000ull};
-    date_time_decimal_result = {"0", "1", "2147483647", "0", "1648951199", "1648954800", "1648958399", "1648958400", "1662263999", "1662264000"};
+    date_time_int_result
+        = {0,
+           1,
+           2147483647ull,
+           0,
+           1648951199ull,
+           1648954800ull,
+           1648958399ull,
+           1648958400ull,
+           1630814399ull,
+           1630814400ull};
+    date_time_decimal_result
+        = {"0",
+           "1",
+           "2147483647",
+           "0",
+           "1648951199",
+           "1648954800",
+           "1648958399",
+           "1648958400",
+           "1630814399",
+           "1630814400"};
     ASSERT_COLUMN_EQ(
         createColumn<UInt64>(date_time_int_result),
         executeFunction(func_name_int, createColumn<MyDateTime>(date_time_data)));
@@ -216,7 +266,7 @@ try
         executeFunction(func_name_dec, createColumn<MyDateTime>(date_time_data)));
 
     /// offset based timezone
-    context.getTimezoneInfo().resetByTimezoneOffset(28800);
+    context->getTimezoneInfo().resetByTimezoneOffset(28800);
     date_time_data = {
         /// min-max valid timestamp
         MyDateTime(1970, 1, 1, 8, 0, 0, 0).toPackedUInt(),
@@ -233,7 +283,7 @@ try
         createColumn<Decimal64>(std::make_tuple(12, 0), date_time_decimal_result),
         executeFunction(func_name_dec, createColumn<MyDateTime>(date_time_data)));
 
-    context.getTimezoneInfo().resetByTimezoneOffset(-10800);
+    context->getTimezoneInfo().resetByTimezoneOffset(-10800);
     date_time_data = {
         /// min-max valid timestamp
         MyDateTime(1969, 12, 31, 21, 0, 0, 0).toPackedUInt(),

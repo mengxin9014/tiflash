@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 
 namespace DB
 {
-/** List of zero, single or multiple JOIN-ed tables or subqueries in SELECT query, with ARRAY JOINs and SAMPLE, FINAL modifiers.
+/** List of zero, single or multiple JOIN-ed tables or subqueries in SELECT query, with SAMPLE and FINAL modifiers.
   *
   * Table expression is:
   *  [database_name.]table_name
@@ -46,9 +46,6 @@ namespace DB
   *  USING (a, b c)
   *  USING a, b, c
   *  ON expr...
-  *
-  * Also, tables may be ARRAY JOIN-ed with one or more arrays or nested columns:
-  *  [LEFT|INNER|] ARRAY JOIN name [AS alias], ...
   */
 
 
@@ -95,19 +92,28 @@ struct ASTTableJoin : public IAST
     enum class Kind
     {
         Inner, /// Leave ony rows that was JOINed.
-        Left, /// If in "right" table there is no corresponding rows, use default values instead.
-        Right,
+        LeftOuter, /// If in "right" table there is no corresponding rows, use default values instead.
+        RightOuter,
         Full,
         Cross, /// Direct product. Strictness and condition doesn't matter.
         Comma, /// Same as direct product. Intended to be converted to INNER JOIN with conditions from WHERE.
         Anti, /// anti join, return un-joined rows of the left table
-        LeftSemi, /// left semi join, used by TiFlash, it means if row a in table A matches some rows in B, output (a, true), otherwise, output (a, false).
-        LeftAnti, /// anti left semi join, used by TiFlash, it means if row a in table A matches some rows in B, output (a, false), otherwise, output (a, true).
-        Cross_Left, /// cartesian left out join, used by TiFlash
-        Cross_Right, /// cartesian right out join, used by TiFlash, in the implementation, it will be converted to cartesian left out join
+        LeftOuterSemi, /// left outer semi join, used by TiFlash, it means if row a in table A matches some rows in B, output (a, true), otherwise, output (a, false).
+        LeftOuterAnti, /// anti left outer semi join, used by TiFlash, it means if row a in table A matches some rows in B, output (a, false), otherwise, output (a, true).
+        Cross_LeftOuter, /// cartesian left out join, used by TiFlash
+        Cross_RightOuter, /// cartesian right out join, used by TiFlash, in the implementation, it will be converted to cartesian left out join
         Cross_Anti, /// cartesian anti join, used by TiFlash
-        Cross_LeftSemi, /// cartesian version of left semi join, used by TiFlash.
-        Cross_LeftAnti, /// cartesian version of left anti semi join, used by TiFlash.
+        Cross_LeftOuterSemi, /// cartesian version of left outer semi join, used by TiFlash.
+        Cross_LeftOuterAnti, /// cartesian version of left outer anti semi join, used by TiFlash.
+        /// Note that there is no NullAware_Semi because semi join does not need to be null-aware.
+        /// In semi join, if it's found in hash table, result is 1, otherwise, 0 or NULL(they're the same).
+        /// However, in anti semi join, if it's found in hash table, result is 0, otherwise, 1 or NULL(they're different).
+        NullAware_Anti, /// null-aware version of anti semi join, used by TiFlash.
+        /// For left (anti) semi join, the exact result must be given, so both of them need to be null-aware.
+        NullAware_LeftOuterSemi, /// null-aware version of left outer semi join, used by TiFlash.
+        NullAware_LeftOuterAnti, /// null-aware version of left outer anti semi join, used by TiFlash.
+        RightSemi, /// semi join, A semi join B, while using table A to build hash table.
+        RightAnti, /// anti semi join, A anti semi join B, while using table A to build hash table.
     };
 
     Locality locality = Locality::Unspecified;
@@ -128,36 +134,14 @@ struct ASTTableJoin : public IAST
 };
 
 
-/// Specification of ARRAY JOIN.
-struct ASTArrayJoin : public IAST
-{
-    enum class Kind
-    {
-        Inner, /// If array is empty, row will not present (default).
-        Left, /// If array is empty, leave row with default values instead of array elements.
-    };
-
-    Kind kind = Kind::Inner;
-
-    /// List of array or nested names to JOIN, possible with aliases.
-    ASTPtr expression_list;
-
-    using IAST::IAST;
-    String getID() const override { return "ArrayJoin"; }
-    ASTPtr clone() const override;
-    void formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const override;
-};
-
-
 /// Element of list.
 struct ASTTablesInSelectQueryElement : public IAST
 {
-    /** For first element of list, either table_expression or array_join element could be non-nullptr.
-      * For former elements, either table_join and table_expression are both non-nullptr, or array_join is non-nullptr.
+    /** For first element of list, table_expression could be non-nullptr.
+      * For former elements, table_join and table_expression are both non-nullptr.
       */
     ASTPtr table_join; /// How to JOIN a table, if table_expression is non-nullptr.
     ASTPtr table_expression; /// Table.
-    ASTPtr array_join; /// Arrays to JOIN.
 
     using IAST::IAST;
     String getID() const override { return "TablesInSelectQueryElement"; }

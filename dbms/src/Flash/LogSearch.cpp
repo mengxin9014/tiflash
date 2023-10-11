@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -276,7 +276,18 @@ std::optional<LogIterator::Error> LogIterator::readLog(LogEntry & entry)
         int timezone_hour, timezone_min;
         std::tm time{};
         int year, month, day, hour, minute, second;
-        if (LogIterator::readDate(line.size(), line.data(), year, month, day, hour, minute, second, milli_second, timezone_hour, timezone_min)
+        if (LogIterator::readDate(
+                line.size(),
+                line.data(),
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                milli_second,
+                timezone_hour,
+                timezone_min)
             && LogIterator::readLevel(line.size(), line.data(), loglevel_s, loglevel_size))
         {
             loglevel_start = line.data() + loglevel_s;
@@ -388,7 +399,11 @@ int64_t readApproxiTimestamp(const char * start, const char * date_format)
 
 // if name ends with date format and timestamp < start-time, return true.
 // otherwise(can NOT tell ts) return false.
-bool filterLogEndDatetime(const std::string & path, const std::string & example, const char * date_format, const int64_t start_time)
+bool filterLogEndDatetime(
+    const std::string & path,
+    const std::string & example,
+    const char * date_format,
+    const int64_t start_time)
 {
     if (path.size() > example.size())
     {
@@ -410,8 +425,10 @@ bool FilterFileByDatetime(
     const int64_t start_time)
 {
     static const std::string date_format_example = "0000-00-00-00:00:00.000";
-    static const std::string raftstore_proxy_date_format_example = "0000-00-00-00:00:00.000000000";
     static const char * date_format = "%d-%d-%d-%d:%d:%d.%d";
+
+    static const std::string raftstore_proxy_date_format_example = "0000-00-00T00:00:00.000.log";
+    static const char * raftstore_proxy_date_format = "%d-%d-%dT%d-%d-%d.%d";
 
     for (const auto & ignore_log_file_prefix : ignore_log_file_prefixes)
     {
@@ -423,7 +440,8 @@ bool FilterFileByDatetime(
         if (path.size() <= gz_suffix.size() + date_format_example.size())
             return false;
 
-        auto date_str = std::string(path.end() - gz_suffix.size() - date_format_example.size(), path.end() - gz_suffix.size());
+        auto date_str
+            = std::string(path.end() - gz_suffix.size() - date_format_example.size(), path.end() - gz_suffix.size());
 
         if (auto ts = readApproxiTimestamp(date_str.data(), date_format); ts == -1)
         {
@@ -441,7 +459,7 @@ bool FilterFileByDatetime(
     else
     {
         // filter proxy log end datetime
-        return filterLogEndDatetime(path, raftstore_proxy_date_format_example, date_format, start_time);
+        return filterLogEndDatetime(path, raftstore_proxy_date_format_example, raftstore_proxy_date_format, start_time);
     }
 }
 

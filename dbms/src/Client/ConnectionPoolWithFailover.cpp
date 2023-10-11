@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +35,11 @@ ConnectionPoolWithFailover::ConnectionPoolWithFailover(
     LoadBalancing load_balancing,
     size_t max_tries_,
     time_t decrease_error_period_)
-    : Base(std::move(nested_pools_), max_tries_, decrease_error_period_, &Poco::Logger::get("ConnectionPoolWithFailover"))
+    : Base(
+        std::move(nested_pools_),
+        max_tries_,
+        decrease_error_period_,
+        &Poco::Logger::get("ConnectionPoolWithFailover"))
     , default_load_balancing(load_balancing)
 {
     const std::string & local_hostname = getFQDNOrHostName();
@@ -48,7 +52,9 @@ ConnectionPoolWithFailover::ConnectionPoolWithFailover(
     }
 }
 
-IConnectionPool::Entry ConnectionPoolWithFailover::getImpl(const Settings * settings, bool /*force_connected*/) // NOLINT
+IConnectionPool::Entry ConnectionPoolWithFailover::getImpl(
+    const Settings * settings,
+    bool /*force_connected*/) // NOLINT
 {
     TryGetEntryFunc try_get_entry = [&](NestedPool & pool, std::string & fail_message) {
         return tryGetEntry(pool, fail_message, settings);
@@ -105,7 +111,7 @@ std::vector<ConnectionPoolWithFailover::TryResult> ConnectionPoolWithFailover::g
     PoolMode pool_mode,
     const TryGetEntryFunc & try_get_entry)
 {
-    size_t min_entries = (settings && settings->skip_unavailable_shards) ? 0 : 1;
+    size_t min_entries = 1;
     size_t max_entries;
     if (pool_mode == PoolMode::GET_ALL)
     {
@@ -115,7 +121,7 @@ std::vector<ConnectionPoolWithFailover::TryResult> ConnectionPoolWithFailover::g
     else if (pool_mode == PoolMode::GET_ONE)
         max_entries = 1;
     else if (pool_mode == PoolMode::GET_MANY)
-        max_entries = settings ? size_t(settings->max_parallel_replicas) : 1;
+        max_entries = 1;
     else
         throw DB::Exception("Unknown pool allocation mode", DB::ErrorCodes::LOGICAL_ERROR);
 
@@ -136,13 +142,13 @@ std::vector<ConnectionPoolWithFailover::TryResult> ConnectionPoolWithFailover::g
         break;
     }
 
-    bool fallback_to_stale_replicas = settings ? bool(settings->fallback_to_stale_replicas_for_distributed_queries) : true;
+    /*fallback_to_stale_replicas_for_distributed_queries*/
+    bool fallback_to_stale_replicas = true;
 
     return Base::getMany(min_entries, max_entries, try_get_entry, get_priority, fallback_to_stale_replicas);
 }
 
-ConnectionPoolWithFailover::TryResult
-ConnectionPoolWithFailover::tryGetEntry(
+ConnectionPoolWithFailover::TryResult ConnectionPoolWithFailover::tryGetEntry(
     IConnectionPool & pool,
     std::string & fail_message,
     const Settings * settings,
@@ -186,7 +192,7 @@ ConnectionPoolWithFailover::tryGetEntry(
 
         result.is_usable = true;
 
-        UInt64 max_allowed_delay = settings ? UInt64(settings->max_replica_delay_for_distributed_queries) : 0;
+        UInt64 max_allowed_delay = settings ? /*max_replica_delay_for_distributed_queries*/ 300 : 0;
         if (!max_allowed_delay)
         {
             result.is_up_to_date = true;

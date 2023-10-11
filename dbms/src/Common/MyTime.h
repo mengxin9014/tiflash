@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <Common/MyDuration.h>
 #include <Core/Field.h>
 #include <Interpreters/TimezoneInfo.h>
 #include <common/DateLUTImpl.h>
@@ -53,7 +54,8 @@ struct MyTimeBase
     static const UInt64 HOUR_BIT_FIELD_MASK = ((1ull << HOUR_BIT_FIELD_WIDTH) - 1) << HOUR_BIT_FIELD_OFFSET;
     static const UInt64 MINUTE_BIT_FIELD_MASK = ((1ull << MINUTE_BIT_FIELD_WIDTH) - 1) << MINUTE_BIT_FIELD_OFFSET;
     static const UInt64 SECOND_BIT_FIELD_MASK = ((1ull << SECOND_BIT_FIELD_WIDTH) - 1) << SECOND_BIT_FIELD_OFFSET;
-    static const UInt64 MICROSECOND_BIT_FIELD_MASK = ((1ull << MICROSECOND_BIT_FIELD_WIDTH) - 1) << MICROSECOND_BIT_FIELD_OFFSET;
+    static const UInt64 MICROSECOND_BIT_FIELD_MASK = ((1ull << MICROSECOND_BIT_FIELD_WIDTH) - 1)
+        << MICROSECOND_BIT_FIELD_OFFSET;
     static const UInt64 FSPTT_BIT_FIELD_MASK = ((1ull << FSPTT_BIT_FIELD_WIDTH) - 1) << FSPTT_BIT_FIELD_OFFSET;
 
     static const UInt64 FSPTT_FOR_DATE = 0b1110;
@@ -90,7 +92,14 @@ struct MyTimeBase
 
     MyTimeBase() = default;
     explicit MyTimeBase(UInt64 packed);
-    MyTimeBase(UInt16 year_, UInt8 month_, UInt8 day_, UInt16 hour_, UInt8 minute_, UInt8 second_, UInt32 micro_second_);
+    MyTimeBase(
+        UInt16 year_,
+        UInt8 month_,
+        UInt8 day_,
+        UInt16 hour_,
+        UInt8 minute_,
+        UInt8 second_,
+        UInt32 micro_second_);
 
     UInt64 toPackedUInt() const;
     UInt64 toCoreTime() const;
@@ -128,6 +137,8 @@ struct MyDateTime : public MyTimeBase
     {}
 
     String toString(int fsp) const;
+
+    MyDuration convertToMyDuration(int fsp);
 
     static MyDateTime getSystemDateTimeByTimezone(const TimezoneInfo &, UInt8 fsp);
 };
@@ -178,7 +189,7 @@ private:
 
     // Parsing method. Parse from ctx.view[ctx.pos].
     // If success, update `datetime`, `ctx` and return true.
-    // If fail, return false.
+    // If fails, return false.
     using ParserCallback = std::function<bool(MyDateTimeParser::Context & ctx, MyTimeBase & datetime)>;
     std::vector<ParserCallback> parsers;
 };
@@ -194,12 +205,31 @@ static bool DefaultIsFloat = false;
 static CheckTimeFunc DefaultCheckTimeFunc = noNeedCheckTime;
 
 Field parseMyDateTime(const String & str, int8_t fsp = DefaultFsp, CheckTimeFunc checkTimeFunc = DefaultCheckTimeFunc);
-Field parseMyDateTimeFromFloat(const String & str, int8_t fsp = DefaultFsp, CheckTimeFunc checkTimeFunc = DefaultCheckTimeFunc);
-std::pair<Field, bool> parseMyDateTimeAndJudgeIsDate(const String & str, int8_t fsp = DefaultFsp, CheckTimeFunc checkTimeFunc = DefaultCheckTimeFunc, bool isFloat = DefaultIsFloat);
+Field parseMyDateTimeFromFloat(
+    const String & str,
+    int8_t fsp = DefaultFsp,
+    CheckTimeFunc checkTimeFunc = DefaultCheckTimeFunc);
+std::pair<Field, bool> parseMyDateTimeAndJudgeIsDate(
+    const String & str,
+    int8_t fsp = DefaultFsp,
+    CheckTimeFunc checkTimeFunc = DefaultCheckTimeFunc,
+    bool isFloat = DefaultIsFloat);
 
-void convertTimeZone(UInt64 from_time, UInt64 & to_time, const DateLUTImpl & time_zone_from, const DateLUTImpl & time_zone_to, bool throw_exception = false);
+Field parseMyDuration(const String & str, int8_t fsp = DefaultFsp);
 
-void convertTimeZoneByOffset(UInt64 from_time, UInt64 & to_time, bool from_utc, Int64 offset, bool throw_exception = false);
+void convertTimeZone(
+    UInt64 from_time,
+    UInt64 & to_time,
+    const DateLUTImpl & time_zone_from,
+    const DateLUTImpl & time_zone_to,
+    bool throw_exception = false);
+
+void convertTimeZoneByOffset(
+    UInt64 from_time,
+    UInt64 & to_time,
+    bool from_utc,
+    Int64 offset,
+    bool throw_exception = false);
 
 MyDateTime convertUTC2TimeZone(time_t utc_ts, UInt32 micro_second, const DateLUTImpl & time_zone_to);
 
@@ -217,16 +247,23 @@ size_t maxFormattedDateTimeStringLength(const String & format);
 
 inline time_t getEpochSecond(const MyDateTime & my_time, const DateLUTImpl & time_zone)
 {
-    return time_zone.makeDateTime(my_time.year, my_time.month, my_time.day, my_time.hour, my_time.minute, my_time.second);
+    return time_zone
+        .makeDateTime(my_time.year, my_time.month, my_time.day, my_time.hour, my_time.minute, my_time.second);
 }
 
-bool isPunctuation(char c);
-
-bool isValidSeperator(char c, int previous_parts);
+bool isValidSeparator(char c, int previous_parts);
 
 // Build CoreTime value with checking overflow of internal bit fields, return true if input is invalid.
 // Note that this function will not check if the input is logically a valid datetime value.
-bool toCoreTimeChecked(const UInt64 & year, const UInt64 & month, const UInt64 & day, const UInt64 & hour, const UInt64 & minute, const UInt64 & second, const UInt64 & microsecond, MyDateTime & result);
+bool toCoreTimeChecked(
+    const UInt64 & year,
+    const UInt64 & month,
+    const UInt64 & day,
+    const UInt64 & hour,
+    const UInt64 & minute,
+    const UInt64 & second,
+    const UInt64 & microsecond,
+    MyDateTime & result);
 
 inline bool isLeapYear(UInt16 year)
 {
@@ -248,5 +285,8 @@ inline UInt8 getLastDay(UInt16 year, UInt8 month)
 UInt64 addSeconds(UInt64 t, Int64 delta);
 void addDays(MyDateTime & t, Int64 days);
 void addMonths(MyDateTime & t, Int64 months);
+
+MyDate createMyDateFromCoreTime(UInt64 coreTime);
+MyDateTime createMyDateTimeFromCoreTime(UInt64 coreTime);
 
 } // namespace DB

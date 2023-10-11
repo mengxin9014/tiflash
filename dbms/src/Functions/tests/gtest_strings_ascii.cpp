@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 #include <DataTypes/DataTypesNumber.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsString.h>
-#include <Interpreters/Context.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
@@ -42,7 +41,7 @@ class StringASCII : public DB::tests::FunctionTest
 // test string and string
 TEST_F(StringASCII, strAndStrTest)
 {
-    const Context context = TiFlashTestEnv::getContext();
+    const auto context = TiFlashTestEnv::getContext();
 
     auto & factory = FunctionFactory::instance();
 
@@ -59,13 +58,14 @@ TEST_F(StringASCII, strAndStrTest)
         }
 
         Block test_block;
-        ColumnWithTypeAndName ctn = ColumnWithTypeAndName(std::move(csp), std::make_shared<DataTypeString>(), "test_ascii");
+        ColumnWithTypeAndName ctn
+            = ColumnWithTypeAndName(std::move(csp), std::make_shared<DataTypeString>(), "test_ascii");
         ColumnsWithTypeAndName ctns{ctn};
         test_block.insert(ctn);
         ColumnNumbers cns{0};
 
         // test ascii
-        auto bp = factory.tryGet("ascii", context);
+        auto bp = factory.tryGet("ascii", *context);
         ASSERT_TRUE(bp != nullptr);
         ASSERT_FALSE(bp->isVariadic());
 
@@ -89,7 +89,7 @@ TEST_F(StringASCII, strAndStrTest)
 // test NULL
 TEST_F(StringASCII, nullTest)
 {
-    const Context context = TiFlashTestEnv::getContext();
+    const auto context = TiFlashTestEnv::getContext();
 
     auto & factory = FunctionFactory::instance();
 
@@ -121,7 +121,7 @@ TEST_F(StringASCII, nullTest)
     test_block.insert(col1);
     ColumnNumbers cns{0};
 
-    auto bp = factory.tryGet("ascii", context);
+    auto bp = factory.tryGet("ascii", *context);
     ASSERT_TRUE(bp != nullptr);
     ASSERT_FALSE(bp->isVariadic());
     auto func = bp->build(ctns);

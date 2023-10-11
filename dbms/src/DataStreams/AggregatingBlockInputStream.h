@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 #pragma once
 
 #include <DataStreams/IProfilingBlockInputStream.h>
-#include <DataStreams/TemporaryFileStream.h>
 #include <Interpreters/Aggregator.h>
 
 namespace DB
@@ -37,13 +36,12 @@ public:
     AggregatingBlockInputStream(
         const BlockInputStreamPtr & input,
         const Aggregator::Params & params_,
-        const FileProviderPtr & file_provider_,
         bool final_,
-        const String & req_id)
+        const String & req_id,
+        const RegisterOperatorSpillContext & register_operator_spill_context)
         : log(Logger::get(req_id))
         , params(params_)
-        , aggregator(params, req_id)
-        , file_provider{file_provider_}
+        , aggregator(params, req_id, 1, register_operator_spill_context)
         , final(final_)
     {
         children.push_back(input);
@@ -60,12 +58,9 @@ protected:
 
     Aggregator::Params params;
     Aggregator aggregator;
-    FileProviderPtr file_provider;
     bool final;
 
     bool executed = false;
-
-    TemporaryFileStreams temporary_inputs;
 
     /** From here we will get the completed blocks after the aggregation. */
     std::unique_ptr<IBlockInputStream> impl;

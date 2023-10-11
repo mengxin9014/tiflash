@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,18 +15,25 @@
 #include <Common/Allocator.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
+#include <Common/TiFlashMetrics.h>
 #include <Common/setThreadName.h>
 #include <Common/typeid_cast.h>
+#include <Core/TiFlashDisaggregatedMode.h>
 #include <Databases/IDatabase.h>
 #include <IO/UncompressedCache.h>
 #include <Interpreters/AsynchronousMetrics.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/SharedContexts/Disagg.h>
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/StoragePool.h>
+#include <Storages/KVStore/KVStore.h>
+#include <Storages/KVStore/TMTContext.h>
 #include <Storages/MarkCache.h>
 #include <Storages/Page/FileUsage.h>
+#include <Storages/Page/PageConstants.h>
+#include <Storages/Page/PageStorage.h>
+#include <Storages/Page/V3/Universal/UniversalPageStorageService.h>
 #include <Storages/StorageDeltaMerge.h>
-#include <Storages/Transaction/KVStore.h>
-#include <Storages/Transaction/TMTContext.h>
 #include <common/config_common.h>
 
 #include <chrono>
@@ -82,8 +89,8 @@ void AsynchronousMetrics::run()
 
     /// Next minute + 30 seconds. To be distant with moment of transmission of metrics, see MetricsTransmitter.
     const auto get_next_minute = [] {
-        return std::chrono::time_point_cast<std::chrono::minutes, std::chrono::system_clock>(
-                   std::chrono::system_clock::now() + std::chrono::minutes(1))
+        return std::chrono::time_point_cast<std::chrono::minutes, std::chrono::steady_clock>(
+                   std::chrono::steady_clock::now() + std::chrono::minutes(1))
             + std::chrono::seconds(30);
     };
 
@@ -107,7 +114,7 @@ void AsynchronousMetrics::run()
 template <typename Max, typename T>
 static void calculateMax(Max & max, T x)
 {
-    if (Max(x) > max)
+    if (static_cast<Max>(x) > max)
         max = x;
 }
 
@@ -115,28 +122,68 @@ template <typename Max, typename Sum, typename T>
 static void calculateMaxAndSum(Max & max, Sum & sum, T x)
 {
     sum += x;
-    if (Max(x) > max)
+    if (static_cast<Max>(x) > max)
         max = x;
 }
 
 FileUsageStatistics AsynchronousMetrics::getPageStorageFileUsage()
 {
-    // Get from RegionPersister
-    auto & tmt = context.getTMTContext();
-    auto & kvstore = tmt.getKVStore();
-    FileUsageStatistics usage = kvstore->getFileUsageStatistics();
-
-    // Get the blob file status from all PS V3 instances
-    if (auto global_storage_pool = context.getGlobalStoragePool(); global_storage_pool != nullptr)
+    FileUsageStatistics usage;
+    switch (context.getSharedContextDisagg()->disaggregated_mode)
     {
-        const auto log_usage = global_storage_pool->log_storage->getFileUsageStatistics();
-        const auto meta_usage = global_storage_pool->meta_storage->getFileUsageStatistics();
-        const auto data_usage = global_storage_pool->data_storage->getFileUsageStatistics();
+    case DisaggregatedMode::None:
+    {
+        if (auto uni_ps = context.tryGetWriteNodePageStorage(); uni_ps != nullptr)
+        {
+            /// When format_version=5 is enabled, then all data are stored in the `uni_ps`
+            usage.merge(uni_ps->getFileUsageStatistics());
+        }
+        else
+        {
+            /// When format_version < 5, then there are multiple PageStorage instances
 
-        usage.total_file_num += log_usage.total_file_num + meta_usage.total_file_num + data_usage.total_file_num;
-        usage.total_disk_size += log_usage.total_disk_size + meta_usage.total_disk_size + data_usage.total_disk_size;
-        usage.total_valid_size += log_usage.total_valid_size + meta_usage.total_valid_size + data_usage.total_valid_size;
+            // Get from RegionPersister
+            auto & tmt = context.getTMTContext();
+            auto & kvstore = tmt.getKVStore();
+            usage = kvstore->getFileUsageStatistics();
+
+            // Get the blob file status from all PS V3 instances
+            if (auto global_storage_pool = context.getGlobalStoragePool(); global_storage_pool != nullptr)
+            {
+                const auto log_usage = global_storage_pool->log_storage->getFileUsageStatistics();
+                const auto meta_usage = global_storage_pool->meta_storage->getFileUsageStatistics();
+                const auto data_usage = global_storage_pool->data_storage->getFileUsageStatistics();
+
+                usage.merge(log_usage).merge(meta_usage).merge(data_usage);
+            }
+        }
+        break;
     }
+    case DisaggregatedMode::Storage:
+    {
+        // disagg write node, all data are stored in the `uni_ps`
+        if (auto uni_ps = context.getWriteNodePageStorage(); uni_ps != nullptr)
+        {
+            usage.merge(uni_ps->getFileUsageStatistics());
+        }
+        break;
+    }
+    case DisaggregatedMode::Compute:
+    {
+        // disagg compute node without auto-scaler, the proxy data are stored in the `uni_ps`
+        if (auto uni_ps = context.tryGetWriteNodePageStorage(); uni_ps != nullptr)
+        {
+            usage.merge(uni_ps->getFileUsageStatistics());
+        }
+        // disagg compute node, all cache page data are stored in the `ps_cache`
+        if (auto ps_cache = context.getSharedContextDisagg()->rn_page_cache_storage; ps_cache != nullptr)
+        {
+            usage.merge(ps_cache->getUniversalPageStorage()->getFileUsageStatistics());
+        }
+        break;
+    }
+    }
+
     return usage;
 }
 
@@ -151,12 +198,29 @@ void AsynchronousMetrics::update()
     }
 
     {
+        if (auto min_max_cache = context.getMinMaxIndexCache())
+        {
+            set("MinMaxIndexCacheBytes", min_max_cache->weight());
+            set("MinMaxIndexFiles", min_max_cache->count());
+        }
+    }
+
+    {
         if (auto uncompressed_cache = context.getUncompressedCache())
         {
             set("UncompressedCacheBytes", uncompressed_cache->weight());
             set("UncompressedCacheCells", uncompressed_cache->count());
         }
     }
+
+    {
+        if (auto rn_delta_index_cache = context.getSharedContextDisagg()->rn_delta_index_cache)
+        {
+            set("RNDeltaIndexCacheBytes", rn_delta_index_cache->getCacheWeight());
+            set("RNDeltaIndexFiles", rn_delta_index_cache->getCacheCount());
+        }
+    }
+
 
     set("Uptime", context.getUptimeSeconds());
 
@@ -179,19 +243,60 @@ void AsynchronousMetrics::update()
                 {
                     if (auto store = dt_storage->getStoreIfInited(); store)
                     {
-                        auto stat = store->getStoreStats();
-                        calculateMax(max_dt_stable_oldest_snapshot_lifetime, stat.storage_stable_oldest_snapshot_lifetime);
-                        calculateMax(max_dt_delta_oldest_snapshot_lifetime, stat.storage_delta_oldest_snapshot_lifetime);
-                        calculateMax(max_dt_meta_oldest_snapshot_lifetime, stat.storage_meta_oldest_snapshot_lifetime);
+                        const auto stat = store->getStoreStats();
+                        if (context.getPageStorageRunMode() == PageStorageRunMode::ONLY_V2)
+                        {
+                            calculateMax(
+                                max_dt_stable_oldest_snapshot_lifetime,
+                                stat.storage_stable_oldest_snapshot_lifetime);
+                            calculateMax(
+                                max_dt_delta_oldest_snapshot_lifetime,
+                                stat.storage_delta_oldest_snapshot_lifetime);
+                            calculateMax(
+                                max_dt_meta_oldest_snapshot_lifetime,
+                                stat.storage_meta_oldest_snapshot_lifetime);
+                        }
                         calculateMax(max_dt_background_tasks_length, stat.background_tasks_length);
                     }
                 }
             }
         }
 
-        set("MaxDTStableOldestSnapshotLifetime", max_dt_stable_oldest_snapshot_lifetime);
-        set("MaxDTDeltaOldestSnapshotLifetime", max_dt_delta_oldest_snapshot_lifetime);
-        set("MaxDTMetaOldestSnapshotLifetime", max_dt_meta_oldest_snapshot_lifetime);
+        switch (context.getPageStorageRunMode())
+        {
+        case PageStorageRunMode::ONLY_V2:
+        {
+            set("MaxDTStableOldestSnapshotLifetime", max_dt_stable_oldest_snapshot_lifetime);
+            set("MaxDTDeltaOldestSnapshotLifetime", max_dt_delta_oldest_snapshot_lifetime);
+            set("MaxDTMetaOldestSnapshotLifetime", max_dt_meta_oldest_snapshot_lifetime);
+            break;
+        }
+        case PageStorageRunMode::ONLY_V3:
+        case PageStorageRunMode::MIX_MODE:
+        {
+            if (auto global_storage_pool = context.getGlobalStoragePool(); global_storage_pool)
+            {
+                const auto log_snap_stat = global_storage_pool->log_storage->getSnapshotsStat();
+                const auto meta_snap_stat = global_storage_pool->meta_storage->getSnapshotsStat();
+                const auto data_snap_stat = global_storage_pool->data_storage->getSnapshotsStat();
+                set("MaxDTDeltaOldestSnapshotLifetime", log_snap_stat.longest_living_seconds);
+                set("MaxDTMetaOldestSnapshotLifetime", meta_snap_stat.longest_living_seconds);
+                set("MaxDTStableOldestSnapshotLifetime", data_snap_stat.longest_living_seconds);
+            }
+            break;
+        }
+        case PageStorageRunMode::UNI_PS:
+        {
+            if (auto uni_ps = context.tryGetWriteNodePageStorage(); uni_ps != nullptr)
+            {
+                // Only set delta snapshot lifetime when UniPS is enabled
+                const auto snap_stat = uni_ps->getSnapshotsStat();
+                set("MaxDTDeltaOldestSnapshotLifetime", snap_stat.longest_living_seconds);
+            }
+            break;
+        }
+        }
+
         set("MaxDTBackgroundTasksLength", max_dt_background_tasks_length);
     }
 
@@ -200,6 +305,18 @@ void AsynchronousMetrics::update()
         set("BlobFileNums", usage.total_file_num);
         set("BlobDiskBytes", usage.total_disk_size);
         set("BlobValidBytes", usage.total_valid_size);
+        set("LogNums", usage.total_log_file_num);
+        set("LogDiskBytes", usage.total_log_disk_size);
+        set("PagesInMem", usage.num_pages);
+    }
+
+    if (context.getSharedContextDisagg()->isDisaggregatedStorageMode())
+    {
+        auto & tmt = context.getTMTContext();
+        if (auto s3_gc_owner = tmt.getS3GCOwnerManager(); s3_gc_owner->isOwner())
+        {
+            GET_METRIC(tiflash_storage_s3_gc_status, type_owner).Set(1.0);
+        }
     }
 
 #if USE_MIMALLOC
@@ -214,7 +331,15 @@ void AsynchronousMetrics::update()
         size_t current_commit;
         size_t peak_commit;
         size_t page_faults;
-        mi_process_info(&elapsed_msecs, &user_msecs, &system_msecs, &current_rss, &peak_rss, &current_commit, &peak_commit, &page_faults);
+        mi_process_info(
+            &elapsed_msecs,
+            &user_msecs,
+            &system_msecs,
+            &current_rss,
+            &peak_rss,
+            &current_commit,
+            &peak_commit,
+            &page_faults);
         MI_STATS_SET(elapsed_msecs);
         MI_STATS_SET(user_msecs);
         MI_STATS_SET(system_msecs);
@@ -241,7 +366,7 @@ void AsynchronousMetrics::update()
     M("background_thread.num_runs", uint64_t)  \
     M("background_thread.run_interval", uint64_t)
 
-#define GET_METRIC(NAME, TYPE)                             \
+#define GET_JEMALLOC_METRIC(NAME, TYPE)                    \
     do                                                     \
     {                                                      \
         TYPE value{};                                      \
@@ -250,9 +375,9 @@ void AsynchronousMetrics::update()
         set("jemalloc." NAME, value);                      \
     } while (0);
 
-        FOR_EACH_METRIC(GET_METRIC);
+        FOR_EACH_METRIC(GET_JEMALLOC_METRIC);
 
-#undef GET_METRIC
+#undef GET_JEMALLOC_METRIC
 #undef FOR_EACH_METRIC
     }
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,9 @@
 
 #pragma once
 
-#include <Common/TiFlashSecurity.h>
+#include <Common/Logger.h>
 #include <Common/Timer.h>
 #include <Poco/Net/HTTPServer.h>
-#include <common/logger_useful.h>
 #include <prometheus/exposer.h>
 #include <prometheus/gateway.h>
 
@@ -25,6 +24,8 @@ namespace DB
 {
 class AsynchronousMetrics;
 class Context;
+class PathCapacityMetrics;
+using PathCapacityMetricsPtr = std::shared_ptr<PathCapacityMetrics>;
 
 /**    Automatically sends
   * - difference of ProfileEvents;
@@ -35,19 +36,21 @@ class Context;
 class MetricsPrometheus
 {
 public:
-    MetricsPrometheus(Context & context, const AsynchronousMetrics & async_metrics_, const TiFlashSecurityConfig & config);
+    MetricsPrometheus(Context & context, const AsynchronousMetrics & async_metrics_);
     ~MetricsPrometheus();
 
 private:
     static constexpr auto status_metrics_interval = "status.metrics_interval";
     static constexpr auto status_metrics_addr = "status.metrics_addr";
     static constexpr auto status_metrics_port = "status.metrics_port";
+    static constexpr auto status_disable_metrics_tls = "status.disable_metrics_tls";
 
     void run();
 
     Timer timer;
+    PathCapacityMetricsPtr path_capacity_metrics;
     const AsynchronousMetrics & async_metrics;
-    Poco::Logger * log;
+    LoggerPtr log;
 
     int metrics_interval;
     std::shared_ptr<prometheus::Gateway> gateway;

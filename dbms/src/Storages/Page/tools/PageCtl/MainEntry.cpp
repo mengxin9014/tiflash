@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,13 @@
 #include <Storages/Page/tools/PageCtl/PageStorageCtl.h>
 #include <Storages/Page/tools/PageCtl/PageStorageCtlV2.h>
 #include <Storages/Page/tools/PageCtl/PageStorageCtlV3.h>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
+
 #include <boost_wrapper/program_options.h>
+
+#pragma GCC diagnostic pop
 
 #include <iostream>
 namespace DB
@@ -26,12 +32,11 @@ int PageStorageCtl::mainEntry(int argc, char ** argv)
     using po::value;
     po::options_description desc("Allowed commands");
     desc.add_options()("help,h", "produce help message") //
-        ("page_storage_version,V", value<int>(), "PageStorage Version: 2 means PageStorage V2, 3 means PageStorage V3.\n");
+        ("page_storage_version,V",
+         value<int>(),
+         "PageStorage Version: 2 means PageStorage V2, 3 means PageStorage V3, 4 means UniversalPageStorage.\n");
     po::variables_map options;
-    po::parsed_options parsed = po::command_line_parser(argc, argv)
-                                    .options(desc)
-                                    .allow_unregistered()
-                                    .run();
+    po::parsed_options parsed = po::command_line_parser(argc, argv).options(desc).allow_unregistered().run();
     po::store(parsed, options);
     po::notify(options);
     if (options.count("page_storage_version") == 0 && options.count("help") == 0)
@@ -43,7 +48,12 @@ int PageStorageCtl::mainEntry(int argc, char ** argv)
     if (options.count("page_storage_version") > 0)
     {
         int ps_version = options["page_storage_version"].as<int>();
-        if (ps_version == 3)
+        if (ps_version == 4)
+        {
+            universalpageStorageCtlEntry(argc - 2, argv + 2);
+            return 0;
+        }
+        else if (ps_version == 3)
         {
             pageStorageV3CtlEntry(argc - 2, argv + 2);
             return 0;

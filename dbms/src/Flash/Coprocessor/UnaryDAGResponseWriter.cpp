@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #include <DataStreams/IProfilingBlockInputStream.h>
 #include <Flash/Coprocessor/ArrowChunkCodec.h>
 #include <Flash/Coprocessor/CHBlockChunkCodec.h>
+#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Coprocessor/DefaultChunkCodec.h>
 #include <Flash/Coprocessor/UnaryDAGResponseWriter.h>
 
@@ -51,7 +52,7 @@ UnaryDAGResponseWriter::UnaryDAGResponseWriter(
 
 void UnaryDAGResponseWriter::encodeChunkToDAGResponse()
 {
-    auto dag_chunk = dag_response->add_chunks();
+    auto * dag_chunk = dag_response->add_chunks();
     dag_chunk->set_rows_data(chunk_codec_stream->getString());
     chunk_codec_stream->clear();
     current_records_num = 0;
@@ -63,21 +64,28 @@ void UnaryDAGResponseWriter::appendWarningsToDAGResponse()
     dag_context.consumeWarnings(warnings);
     for (auto & warning : warnings)
     {
-        auto warn = dag_response->add_warnings();
+        auto * warn = dag_response->add_warnings();
         // TODO: consider using allocated warnings to prevent copy?
         warn->CopyFrom(warning);
     }
     dag_response->set_warning_count(dag_context.getWarningCount());
 }
 
-void UnaryDAGResponseWriter::finishWrite()
+void UnaryDAGResponseWriter::flush()
 {
     if (current_records_num > 0)
     {
         encodeChunkToDAGResponse();
     }
-    appendWarningsToDAGResponse();
-    addExecuteSummaries(*dag_response, false);
+    // TODO separate from UnaryDAGResponseWriter and support mpp/batchCop.
+    dag_context.fillWarnings(*dag_response);
+
+    // Under some test cases, there may be dag response whose size is bigger than INT_MAX, and GRPC can not limit it.
+    // Throw exception to prevent receiver from getting wrong response.
+    if (unlikely(accurate::greaterOp(dag_response->ByteSizeLong(), std::numeric_limits<int>::max())))
+        throw TiFlashException(
+            "DAG response is too big, please check config about region size or region merge scheduler",
+            Errors::Coprocessor::Internal);
 }
 
 void UnaryDAGResponseWriter::write(const Block & block)

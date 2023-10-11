@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,8 +18,10 @@
 #include <Encryption/FileProvider.h>
 #include <IO/WriteHelpers.h>
 #include <Storages/Page/Page.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/PageConstants.h>
+#include <Storages/Page/PageDefinesBase.h>
 #include <Storages/Page/V3/BlobStore.h>
+#include <Storages/Page/V3/PageDefines.h>
 #include <Storages/Page/V3/PageDirectory.h>
 #include <Storages/Page/V3/PageDirectory/ExternalIdsByNamespace.h>
 #include <Storages/Page/V3/PageDirectoryFactory.h>
@@ -28,8 +30,8 @@
 #include <Storages/Page/V3/WAL/serialize.h>
 #include <Storages/Page/V3/WALStore.h>
 #include <Storages/Page/V3/tests/entries_helper.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
 #include <TestUtils/MockDiskDelegator.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <TestUtils/TiFlashTestEnv.h>
 #include <common/logger_useful.h>
@@ -47,10 +49,12 @@ namespace DB
 {
 namespace PS::V3::tests
 {
+using u128::PageEntriesEdit;
+
 TEST(ExternalIdsByNamespaceTest, Simple)
 {
-    NamespaceId ns_id = 100;
-    ExternalIdsByNamespace external_ids_by_ns;
+    NamespaceID ns_id = 100;
+    ExternalIdsByNamespace<typename u128::PageIdTrait> external_ids_by_ns;
 
     {
         ASSERT_FALSE(external_ids_by_ns.existNamespace(ns_id));
@@ -81,9 +85,10 @@ TEST(ExternalIdsByNamespaceTest, Simple)
     {
         // holder keep "50" alive
         auto ids = external_ids_by_ns.getAliveIds(ns_id);
-        LOG_DEBUG(&Poco::Logger::root(), "{} end first, size={}", who.load(), ids.size());
-        ASSERT_EQ(ids.size(), 1);
-        ASSERT_EQ(*ids.begin(), 50);
+        ASSERT_TRUE(ids.has_value());
+        LOG_DEBUG(Logger::get(), "{} end first, size={}", who.load(), ids->size());
+        ASSERT_EQ(ids->size(), 1);
+        ASSERT_EQ(*ids->begin(), 50);
         ASSERT_TRUE(external_ids_by_ns.existNamespace(ns_id));
     }
 
@@ -92,7 +97,7 @@ TEST(ExternalIdsByNamespaceTest, Simple)
         // "50" is erased though the holder is not released.
         external_ids_by_ns.unregisterNamespace(ns_id);
         auto ids = external_ids_by_ns.getAliveIds(ns_id);
-        ASSERT_EQ(ids.size(), 0);
+        ASSERT_FALSE(ids.has_value()); // nullopt
         ASSERT_FALSE(external_ids_by_ns.existNamespace(ns_id));
     }
 }
@@ -111,28 +116,33 @@ public:
         dir = restoreFromDisk();
     }
 
-    static PageDirectoryPtr restoreFromDisk()
+    static u128::PageDirectoryPtr restoreFromDisk()
     {
         auto path = getTemporaryPath();
-        auto ctx = DB::tests::TiFlashTestEnv::getContext();
-        FileProviderPtr provider = ctx.getFileProvider();
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
         PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
-        PageDirectoryFactory factory;
+        PageDirectoryFactory<u128::FactoryTrait> factory;
         return factory.create("PageDirectoryTest", provider, delegator, WALConfig());
     }
 
 protected:
-    static PageId getNormalPageIdU64(const PageDirectoryPtr & d, PageId page_id, const PageDirectorySnapshotPtr & snap)
+    static PageIdU64 getNormalPageIdU64(
+        const u128::PageDirectoryPtr & d,
+        PageIdU64 page_id,
+        const PageDirectorySnapshotPtr & snap)
     {
         return d->getNormalPageId(buildV3Id(TEST_NAMESPACE_ID, page_id), snap, true).low;
     }
-    static PageEntryV3 getEntry(const PageDirectoryPtr & d, PageId page_id, const PageDirectorySnapshotPtr & snap)
+    static PageEntryV3 getEntry(
+        const u128::PageDirectoryPtr & d,
+        PageIdU64 page_id,
+        const PageDirectorySnapshotPtr & snap)
     {
         return d->getByID(buildV3Id(TEST_NAMESPACE_ID, page_id), snap).second;
     }
 
 protected:
-    PageDirectoryPtr dir;
+    u128::PageDirectoryPtr dir;
 
     LoggerPtr log;
 };
@@ -166,11 +176,14 @@ try
     EXPECT_ENTRY_EQ(entry1, dir, 1, snap2);
     {
         PageIdV3Internals ids{buildV3Id(TEST_NAMESPACE_ID, 1), buildV3Id(TEST_NAMESPACE_ID, 2)};
-        PageIDAndEntriesV3 expected_entries{{buildV3Id(TEST_NAMESPACE_ID, 1), entry1}, {buildV3Id(TEST_NAMESPACE_ID, 2), entry2}};
+        PageIDAndEntriesV3 expected_entries{
+            {buildV3Id(TEST_NAMESPACE_ID, 1), entry1},
+            {buildV3Id(TEST_NAMESPACE_ID, 2), entry2}};
         EXPECT_ENTRIES_EQ(expected_entries, dir, ids, snap2);
     }
 
-    PageEntryV3 entry2_v2{.file_id = 2 + 102, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry2_v2{.file_id = 2 + 102, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
     {
         PageEntriesEdit edit;
         edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
@@ -186,7 +199,7 @@ TEST_F(PageDirectoryTest, ApplyPutWithIdenticalPages)
 try
 {
     // Put identical page in different `edit`
-    PageId page_id = 50;
+    PageIdU64 page_id = 50;
 
     auto snap0 = dir->createSnapshot();
     EXPECT_ENTRY_NOT_EXIST(dir, page_id, snap0);
@@ -275,8 +288,14 @@ try
     EXPECT_ENTRY_EQ(entry3, dir, 3, snap2);
     EXPECT_ENTRY_EQ(entry4, dir, 4, snap2);
     {
-        PageIdV3Internals ids{buildV3Id(TEST_NAMESPACE_ID, 1), buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 4)};
-        PageIDAndEntriesV3 expected_entries{{buildV3Id(TEST_NAMESPACE_ID, 1), entry1}, {buildV3Id(TEST_NAMESPACE_ID, 3), entry3}, {buildV3Id(TEST_NAMESPACE_ID, 4), entry4}};
+        PageIdV3Internals ids{
+            buildV3Id(TEST_NAMESPACE_ID, 1),
+            buildV3Id(TEST_NAMESPACE_ID, 3),
+            buildV3Id(TEST_NAMESPACE_ID, 4)};
+        PageIDAndEntriesV3 expected_entries{
+            {buildV3Id(TEST_NAMESPACE_ID, 1), entry1},
+            {buildV3Id(TEST_NAMESPACE_ID, 3), entry3},
+            {buildV3Id(TEST_NAMESPACE_ID, 4), entry4}};
         EXPECT_ENTRIES_EQ(expected_entries, dir, ids, snap2);
     }
 }
@@ -304,19 +323,30 @@ try
     EXPECT_ENTRY_EQ(entry2, dir, 3, snap1);
 
     // Update on ref page is not allowed
-    PageEntryV3 entry_updated{.file_id = 999, .size = 16, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x123};
+    PageEntryV3
+        entry_updated{.file_id = 999, .size = 16, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x123};
     {
         PageEntriesEdit edit;
         edit.put(buildV3Id(TEST_NAMESPACE_ID, 3), entry_updated);
         ASSERT_ANY_THROW(dir->apply(std::move(edit)));
     }
 
-    PageEntryV3 entry_updated2{.file_id = 777, .size = 16, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x123};
+    PageEntryV3
+        entry_updated2{.file_id = 777, .size = 16, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x123};
     {
         PageEntriesEdit edit;
         edit.put(buildV3Id(TEST_NAMESPACE_ID, 2), entry_updated2);
         ASSERT_ANY_THROW(dir->apply(std::move(edit)));
     }
+
+    // Write a new entry to make sure apply works normally after exception throw
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 10), entry1);
+        dir->apply(std::move(edit));
+    }
+    auto snap2 = dir->createSnapshot();
+    EXPECT_ENTRY_EQ(entry1, dir, 10, snap2);
 }
 CATCH
 
@@ -538,6 +568,90 @@ TEST_F(PageDirectoryTest, RefWontDeadLock)
     dir->apply(std::move(edit2));
 }
 
+TEST_F(PageDirectoryTest, BatchWriteSuccess)
+{
+    PageEntryV3 entry1{.file_id = 1, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3 entry2{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3 entry3{.file_id = 3, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+
+    auto sp_before_leader_apply = SyncPointCtl::enableInScope("before_PageDirectory::leader_apply");
+    auto th_write1 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry1);
+        dir->apply(std::move(edit));
+    });
+    sp_before_leader_apply.waitAndPause();
+
+    // form a write group
+    auto sp_after_enter_write_group = SyncPointCtl::enableInScope("after_PageDirectory::enter_write_group");
+    auto th_write2 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 2), entry2);
+        dir->apply(std::move(edit));
+    });
+    auto th_write3 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 3), entry3);
+        dir->apply(std::move(edit));
+    });
+    sp_after_enter_write_group.waitAndNext();
+    sp_after_enter_write_group.waitAndNext();
+    ASSERT_EQ(dir->getWritersQueueSizeForTest(), 3); // 3 writers in write group
+
+    sp_before_leader_apply.next(); // continue first leader_apply
+    th_write1.get();
+
+    sp_before_leader_apply.waitAndNext(); // continue second leader_apply
+    th_write2.get();
+    th_write3.get();
+    ASSERT_EQ(dir->getWritersQueueSizeForTest(), 0);
+
+    auto snap = dir->createSnapshot();
+    EXPECT_ENTRY_EQ(entry1, dir, 1, snap);
+    EXPECT_ENTRY_EQ(entry2, dir, 2, snap);
+    EXPECT_ENTRY_EQ(entry3, dir, 3, snap);
+}
+
+TEST_F(PageDirectoryTest, BatchWriteException)
+{
+    PageEntryV3 entry1{.file_id = 1, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+
+    auto sp_before_leader_apply = SyncPointCtl::enableInScope("before_PageDirectory::leader_apply");
+    auto th_write1 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry1);
+        dir->apply(std::move(edit));
+    });
+    sp_before_leader_apply.waitAndPause();
+
+    // form a write group
+    auto sp_after_enter_write_group = SyncPointCtl::enableInScope("after_PageDirectory::enter_write_group");
+    auto th_write2 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 100));
+        ASSERT_ANY_THROW(dir->apply(std::move(edit)));
+    });
+    auto th_write3 = std::async([&]() {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 100));
+        ASSERT_ANY_THROW(dir->apply(std::move(edit)));
+    });
+    sp_after_enter_write_group.waitAndNext();
+    sp_after_enter_write_group.waitAndNext();
+    ASSERT_EQ(dir->getWritersQueueSizeForTest(), 3); // 3 writers in write group
+
+    sp_before_leader_apply.next(); // continue first leader_apply
+    th_write1.get();
+
+    sp_before_leader_apply.waitAndNext(); // continue secode leader_apply
+    th_write2.get();
+    th_write3.get();
+    ASSERT_EQ(dir->getWritersQueueSizeForTest(), 0);
+
+    auto snap = dir->createSnapshot();
+    EXPECT_ENTRY_EQ(entry1, dir, 1, snap);
+}
+
 TEST_F(PageDirectoryTest, IdempotentNewExtPageAfterAllCleaned)
 {
     // Make sure creating ext page after itself and all its reference are clean
@@ -547,8 +661,9 @@ TEST_F(PageDirectoryTest, IdempotentNewExtPageAfterAllCleaned)
         edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 10));
         dir->apply(std::move(edit));
         auto alive_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ids.size(), 1);
-        EXPECT_GT(alive_ids.count(10), 0);
+        ASSERT_TRUE(alive_ids.has_value());
+        EXPECT_EQ(alive_ids->size(), 1);
+        EXPECT_GT(alive_ids->count(10), 0);
     }
 
     {
@@ -556,18 +671,20 @@ TEST_F(PageDirectoryTest, IdempotentNewExtPageAfterAllCleaned)
         edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 10)); // should be idempotent
         dir->apply(std::move(edit));
         auto alive_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ids.size(), 1);
-        EXPECT_GT(alive_ids.count(10), 0);
+        ASSERT_TRUE(alive_ids.has_value());
+        EXPECT_EQ(alive_ids->size(), 1);
+        EXPECT_GT(alive_ids->count(10), 0);
     }
 
     {
         PageEntriesEdit edit;
         edit.del(buildV3Id(TEST_NAMESPACE_ID, 10));
         dir->apply(std::move(edit));
-        dir->gcInMemEntries(); // clean in memory
+        dir->gcInMemEntries({}); // clean in memory
         auto alive_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ids.size(), 0);
-        EXPECT_EQ(alive_ids.count(10), 0); // removed
+        ASSERT_TRUE(alive_ids.has_value());
+        EXPECT_EQ(alive_ids->size(), 0);
+        EXPECT_EQ(alive_ids->count(10), 0); // removed
     }
 
     {
@@ -576,8 +693,9 @@ TEST_F(PageDirectoryTest, IdempotentNewExtPageAfterAllCleaned)
         edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 10));
         dir->apply(std::move(edit));
         auto alive_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ids.size(), 1);
-        EXPECT_GT(alive_ids.count(10), 0);
+        ASSERT_TRUE(alive_ids.has_value());
+        EXPECT_EQ(alive_ids->size(), 1);
+        EXPECT_GT(alive_ids->count(10), 0);
     }
 }
 
@@ -636,7 +754,7 @@ try
 {
     {
         PageEntriesEdit edit;
-        edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 1));
+        edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 1), PageEntryV3{});
         dir->apply(std::move(edit));
     }
     {
@@ -709,7 +827,7 @@ CATCH
 TEST_F(PageDirectoryTest, NewRefAfterDelRandom)
 try
 {
-    PageId id = 50;
+    PageIdU64 id = 50;
     PageEntryV3 entry1{.file_id = 1, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
     {
         PageEntriesEdit edit;
@@ -717,7 +835,7 @@ try
         dir->apply(std::move(edit));
     }
 
-    std::unordered_set<PageId> visible_page_ids{
+    std::unordered_set<PageIdU64> visible_page_ids{
         id,
     };
 
@@ -731,11 +849,17 @@ try
         SCOPED_TRACE(fmt::format("test idx={}", test_round));
         const bool del_in_same_wb = distrib(gen) % 2 == 0;
         const bool gc_or_not = distrib(gen) < 1;
-        LOG_DEBUG(log, "round={}, del_in_same_wb={}, gc_or_not={}, visible_ids_num={}", test_round, del_in_same_wb, gc_or_not, visible_page_ids.size());
+        LOG_DEBUG(
+            log,
+            "round={}, del_in_same_wb={}, gc_or_not={}, visible_ids_num={}",
+            test_round,
+            del_in_same_wb,
+            gc_or_not,
+            visible_page_ids.size());
 
         // Generate new ref operations to the visible pages
         const size_t num_ref_page = distrib(gen) + 1;
-        std::unordered_map<PageId, PageId> new_ref_page_ids;
+        std::unordered_map<PageIdU64, PageIdU64> new_ref_page_ids;
         std::uniform_int_distribution<> rand_visible_ids(0, visible_page_ids.size() - 1);
         for (size_t j = 0; j < num_ref_page; ++j)
         {
@@ -748,13 +872,14 @@ try
         // Generate new delete operations among the visible pages and new-generated ref page
         // Delete 1 page at least, delete until 1 page left at most
         std::uniform_int_distribution<> rand_delete_ids(0, visible_page_ids.size() + num_ref_page - 1);
-        const size_t num_del_page = std::min(std::max(rand_delete_ids(gen), 1), visible_page_ids.size() + num_ref_page - 1);
-        std::unordered_set<PageId> delete_ref_page_ids;
+        const size_t num_del_page
+            = std::min(std::max(rand_delete_ids(gen), 1), visible_page_ids.size() + num_ref_page - 1);
+        std::unordered_set<PageIdU64> delete_ref_page_ids;
         for (size_t j = 0; j < num_del_page; ++j)
         {
             // Random choose a id from all visible id and new-generated ref pages.
             auto r = rand_delete_ids(gen);
-            PageId id_to_del = 0;
+            PageIdU64 id_to_del = 0;
             if (static_cast<size_t>(r) < visible_page_ids.size())
             {
                 auto rand_it = std::next(std::begin(visible_page_ids), r);
@@ -804,11 +929,11 @@ try
             visible_page_ids.erase(x);
 
         if (gc_or_not)
-            dir->gcInMemEntries(/*return_removed_entries=*/false);
+            dir->gcInMemEntries({.need_removed_entries = false});
         auto snap = dir->createSnapshot();
-        for (const auto & id : visible_page_ids)
+        for (const auto & cur_id : visible_page_ids)
         {
-            ASSERT_ENTRY_EQ(entry1, dir, id, snap);
+            ASSERT_ENTRY_EQ(entry1, dir, cur_id, snap);
         }
     }
 }
@@ -817,14 +942,14 @@ CATCH
 TEST_F(PageDirectoryTest, NewRefToExtAfterDelRandom)
 try
 {
-    PageId id = 50;
+    PageIdU64 id = 50;
     {
         PageEntriesEdit edit;
         edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, id));
         dir->apply(std::move(edit));
     }
 
-    std::unordered_set<PageId> visible_page_ids{
+    std::unordered_set<PageIdU64> visible_page_ids{
         id,
     };
 
@@ -838,10 +963,16 @@ try
         SCOPED_TRACE(fmt::format("test idx={}", test_round));
         const bool del_in_same_wb = distrib(gen) % 2 == 0;
         const bool gc_or_not = distrib(gen) < 1;
-        LOG_DEBUG(log, "round={}, del_in_same_wb={}, gc_or_not={}, visible_ids_num={}", test_round, del_in_same_wb, gc_or_not, visible_page_ids.size());
+        LOG_DEBUG(
+            log,
+            "round={}, del_in_same_wb={}, gc_or_not={}, visible_ids_num={}",
+            test_round,
+            del_in_same_wb,
+            gc_or_not,
+            visible_page_ids.size());
 
         const size_t num_ref_page = distrib(gen) + 1;
-        std::unordered_map<PageId, PageId> new_ref_page_ids;
+        std::unordered_map<PageIdU64, PageIdU64> new_ref_page_ids;
         std::uniform_int_distribution<> rand_visible_ids(0, visible_page_ids.size() - 1);
         for (size_t j = 0; j < num_ref_page; ++j)
         {
@@ -853,8 +984,9 @@ try
 
         // Delete 1 page at least, delete until 1 page left at most
         std::uniform_int_distribution<> rand_delete_ids(0, visible_page_ids.size() + num_ref_page - 1);
-        const size_t num_del_page = std::min(std::max(rand_delete_ids(gen), 1), visible_page_ids.size() + num_ref_page - 1);
-        std::unordered_set<PageId> delete_ref_page_ids;
+        const size_t num_del_page
+            = std::min(std::max(rand_delete_ids(gen), 1), visible_page_ids.size() + num_ref_page - 1);
+        std::unordered_set<PageIdU64> delete_ref_page_ids;
         for (size_t j = 0; j < num_del_page; ++j)
         {
             auto r = rand_delete_ids(gen);
@@ -906,17 +1038,19 @@ try
 
         if (gc_or_not)
         {
-            dir->gcInMemEntries(/*return_removed_entries=*/false);
+            dir->gcInMemEntries({.need_removed_entries = false});
             const auto all_ids = dir->getAllPageIds();
-            for (const auto & id : visible_page_ids)
+            for (const auto & cur_id : visible_page_ids)
             {
-                EXPECT_GT(all_ids.count(buildV3Id(TEST_NAMESPACE_ID, id)), 0) << fmt::format("cur_id:{}, all_id:{}, visible_ids:{}", id, all_ids, visible_page_ids);
+                EXPECT_GT(all_ids.count(buildV3Id(TEST_NAMESPACE_ID, cur_id)), 0)
+                    << fmt::format("cur_id:{}, all_id:{}, visible_ids:{}", cur_id, all_ids, visible_page_ids);
             }
         }
         auto snap = dir->createSnapshot();
         auto alive_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ids.size(), 1);
-        EXPECT_GT(alive_ids.count(50), 0);
+        ASSERT_TRUE(alive_ids.has_value());
+        EXPECT_EQ(alive_ids->size(), 1);
+        EXPECT_GT(alive_ids->count(50), 0);
     }
 }
 CATCH
@@ -989,12 +1123,18 @@ class PageDirectoryGCTest : public PageDirectoryTest
 {
 };
 
-#define INSERT_ENTRY_TO(PAGE_ID, VERSION, BLOB_FILE_ID)                                                                                          \
-    PageEntryV3 entry_v##VERSION{.file_id = (BLOB_FILE_ID), .size = (VERSION), .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567}; \
-    {                                                                                                                                            \
-        PageEntriesEdit edit;                                                                                                                    \
-        edit.put(buildV3Id(TEST_NAMESPACE_ID, (PAGE_ID)), entry_v##VERSION);                                                                     \
-        dir->apply(std::move(edit));                                                                                                             \
+#define INSERT_ENTRY_TO(PAGE_ID, VERSION, BLOB_FILE_ID)                      \
+    PageEntryV3 entry_v##VERSION{                                            \
+        .file_id = (BLOB_FILE_ID),                                           \
+        .size = (VERSION),                                                   \
+        .padded_size = 0,                                                    \
+        .tag = 0,                                                            \
+        .offset = 0x123,                                                     \
+        .checksum = 0x4567};                                                 \
+    {                                                                        \
+        PageEntriesEdit edit;                                                \
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, (PAGE_ID)), entry_v##VERSION); \
+        dir->apply(std::move(edit));                                         \
     }
 // Insert an entry into mvcc directory
 #define INSERT_ENTRY(PAGE_ID, VERSION) INSERT_ENTRY_TO(PAGE_ID, VERSION, 1)
@@ -1011,10 +1151,10 @@ class PageDirectoryGCTest : public PageDirectoryTest
 
 TEST_F(PageDirectoryGCTest, ManyEditsAndDumpSnapshot)
 {
-    PageId page_id0 = 50;
-    PageId page_id1 = 51;
-    PageId page_id2 = 52;
-    PageId page_id3 = 53;
+    PageIdU64 page_id0 = 50;
+    PageIdU64 page_id1 = 51;
+    PageIdU64 page_id2 = 52;
+    PageIdU64 page_id3 = 53;
 
     PageEntryV3 last_entry_for_0;
     constexpr size_t num_edits_test = 50000;
@@ -1063,10 +1203,463 @@ TEST_F(PageDirectoryGCTest, ManyEditsAndDumpSnapshot)
     }
 }
 
+TEST_F(PageDirectoryGCTest, DumpSnapshotDuringWrite)
+{
+    // write some data and roll the log file
+    for (size_t i = 0; i < 100; ++i)
+    {
+        INSERT_ENTRY(i + 50, i);
+    }
+    ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+
+    // write a few more data
+    for (size_t i = 100; i < 110; ++i)
+    {
+        INSERT_ENTRY(i + 50, i);
+    }
+
+    auto sp_before_apply_memory = SyncPointCtl::enableInScope("before_PageDirectory::apply_to_memory");
+    auto th_write1 = std::async([&]() {
+        PageEntriesEdit edit;
+        PageEntryV3
+            entry_1_v1{.file_id = 1, .size = 1, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 5352), entry_1_v1);
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 5353), buildV3Id(TEST_NAMESPACE_ID, 5352));
+        dir->apply(std::move(edit));
+    });
+    sp_before_apply_memory.waitAndPause();
+
+    // dump snapshot during write
+    ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+
+    sp_before_apply_memory.next();
+    th_write1.get();
+
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 5353, snap);
+        EXPECT_EQ(normal_id, 5352);
+    }
+
+    dir.reset();
+
+    dir = restoreFromDisk();
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 5353, snap);
+        EXPECT_EQ(normal_id, 5352);
+    }
+}
+
+TEST_F(PageDirectoryTest, RestoreWithRefToDeletedPage)
+try
+{
+    {
+        PageEntryV3
+            entry_1_v1{.file_id = 1, .size = 1, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+        PageEntriesEdit edit; // ingest
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 352), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 353), buildV3Id(TEST_NAMESPACE_ID, 352));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit; // ingest done
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 352));
+        dir->apply(std::move(edit));
+    }
+
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 353, snap);
+        EXPECT_EQ(normal_id, 352);
+    }
+
+    auto s0 = dir->createSnapshot();
+    auto edit = dir->dumpSnapshotToEdit(s0);
+    auto restore_from_edit = [](const PageEntriesEdit & edit) {
+        auto deseri_edit = u128::Serializer::deserializeFrom(u128::Serializer::serializeTo(edit), nullptr);
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
+        auto path = getTemporaryPath();
+        PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
+        PageDirectoryFactory<u128::FactoryTrait> factory;
+        auto d = factory.createFromEditForTest(getCurrentTestName(), provider, delegator, deseri_edit);
+        return d;
+    };
+
+    {
+        auto restored_dir = restore_from_edit(edit);
+        auto snap = restored_dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(restored_dir, 353, snap);
+        EXPECT_EQ(normal_id, 352);
+    }
+}
+CATCH
+
+TEST_F(PageDirectoryTest, IncrRefDuringDump)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 1));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        dir->apply(std::move(edit));
+    }
+
+    {
+        dir->gcInMemEntries({});
+        ASSERT_EQ(dir->numPages(), 2);
+    }
+
+    // create a snap for dump
+    auto snap = dir->createSnapshot("");
+
+    // add a ref during dump snapshot
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 5), buildV3Id(TEST_NAMESPACE_ID, 3));
+        dir->apply(std::move(edit));
+    }
+
+    // check the being_ref_count in dumped snapshot is correct
+    {
+        auto edit = dir->dumpSnapshotToEdit(snap);
+        ASSERT_EQ(edit.size(), 3);
+        const auto & records = edit.getRecords();
+        ASSERT_EQ(records[0].type, EditRecordType::VAR_ENTRY);
+        ASSERT_EQ(records[0].being_ref_count, 2);
+        ASSERT_EQ(records[1].type, EditRecordType::VAR_DELETE);
+        ASSERT_EQ(records[2].type, EditRecordType::VAR_REF);
+    }
+
+    {
+        auto edit = dir->dumpSnapshotToEdit();
+        ASSERT_EQ(edit.size(), 4);
+        const auto & records = edit.getRecords();
+        ASSERT_EQ(records[0].type, EditRecordType::VAR_ENTRY);
+        ASSERT_EQ(records[0].being_ref_count, 3);
+        ASSERT_EQ(records[1].type, EditRecordType::VAR_DELETE);
+        ASSERT_EQ(records[2].type, EditRecordType::VAR_REF);
+        ASSERT_EQ(records[3].type, EditRecordType::VAR_REF);
+    }
+}
+CATCH
+
+TEST_F(PageDirectoryTest, Issue7915Case1)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    // rotate the current log file
+    ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 2));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        dir->apply(std::move(edit));
+    }
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 3, snap);
+        EXPECT_EQ(normal_id, 1);
+    }
+
+    auto sp_after_create_snap_for_dump = SyncPointCtl::enableInScope("after_PageDirectory::create_snap_for_dump");
+    auto th_dump = std::async([&]() {
+        // ensure page 2 is deleted in the dumped snapshot
+        dir->gcInMemEntries(u128::PageDirectoryType::InMemGCOption{.need_removed_entries = false});
+        ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+    });
+    sp_after_create_snap_for_dump.waitAndPause();
+
+    // write an arbitrary record to the current log file to prevent it being deleted after dump snapshot
+    PageEntryV3
+        entry_5_v1{.file_id = 500, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x321, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 5), entry_5_v1);
+        dir->apply(std::move(edit));
+    }
+
+    sp_after_create_snap_for_dump.next();
+    th_dump.get();
+
+    // restart and check
+    dir = restoreFromDisk();
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 3, snap);
+        EXPECT_EQ(normal_id, 1);
+        ASSERT_EQ(dir->numPages(), 3);
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 1, snap);
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 3, snap);
+        EXPECT_ENTRY_EQ(entry_5_v1, dir, 5, snap);
+    }
+}
+CATCH
+
+TEST_F(PageDirectoryTest, Issue7915Case2)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    // rotate the current log file
+    ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+
+    auto sp_after_create_snap_for_dump = SyncPointCtl::enableInScope("after_PageDirectory::create_snap_for_dump");
+    auto th_dump = std::async([&]() {
+        // ensure page 2, page 1 is deleted in the dumped snapshot
+        dir->gcInMemEntries(u128::PageDirectoryType::InMemGCOption{.need_removed_entries = false});
+        ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+    });
+    sp_after_create_snap_for_dump.waitAndPause();
+
+    // write an arbitrary record to the current log file to prevent it being deleted after dump snapshot
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 5), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+
+    sp_after_create_snap_for_dump.next();
+    th_dump.get();
+
+    // restart and check
+    dir = restoreFromDisk();
+    {
+        ASSERT_EQ(dir->numPages(), 1);
+        auto snap = dir->createSnapshot("");
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 5, snap);
+    }
+}
+CATCH
+
+
+TEST_F(PageDirectoryTest, Issue7915Case3)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry_full_gc{.file_id = 5050, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 10000), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    // rotate the current log file
+    ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    {
+        // Mock full gc happens and move page 10000 to another blob file
+        const auto gc_entries = dir->getEntriesByBlobIds(std::vector<BlobFileId>{50});
+        PageEntriesEdit edit;
+        for (const auto & [file_id, versioned_pageid_entry_list] : gc_entries.first)
+        {
+            for (const auto & [page_id, version, entry] : versioned_pageid_entry_list)
+            {
+                edit.upsertPage(page_id, version, entry_full_gc);
+            }
+        }
+        dir->gcApply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+
+    auto sp_after_create_snap_for_dump = SyncPointCtl::enableInScope("after_PageDirectory::create_snap_for_dump");
+    auto th_dump = std::async([&]() {
+        // ensure page 2, page 1 is deleted in the dumped snapshot
+        dir->gcInMemEntries(u128::PageDirectoryType::InMemGCOption{.need_removed_entries = false});
+        ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+    });
+    sp_after_create_snap_for_dump.waitAndPause();
+
+    // write an arbitrary record to the current log file to prevent it being deleted after dump snapshot
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 5), entry_1_v1);
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 10005), buildV3Id(TEST_NAMESPACE_ID, 10000));
+        dir->apply(std::move(edit));
+    }
+
+    sp_after_create_snap_for_dump.next();
+    th_dump.get();
+
+    // restart and check
+    dir = restoreFromDisk();
+    {
+        ASSERT_EQ(dir->numPages(), 3);
+        // page 1, 2 should be deleted, and page 10000, 5 is restored
+        auto snap = dir->createSnapshot();
+        EXPECT_ENTRY_EQ(entry_full_gc, dir, 10000, snap);
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 5, snap);
+        // the ref 10005 -> 10000 is not ignored
+        EXPECT_ENTRY_EQ(entry_full_gc, dir, 10005, snap);
+    }
+}
+CATCH
+
+TEST_F(PageDirectoryTest, Issue7915Case4)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry_2_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 2), entry_2_v1);
+        dir->apply(std::move(edit));
+    }
+
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 2));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 3));
+        dir->apply(std::move(edit));
+    }
+
+    {
+        dir->gcInMemEntries(u128::PageDirectoryType::InMemGCOption{.need_removed_entries = false});
+        ASSERT_TRUE(dir->tryDumpSnapshot(nullptr, true));
+    }
+
+    // restart and check
+    dir = restoreFromDisk();
+    {
+        EXPECT_EQ(dir->numPages(), 1);
+        auto snap = dir->createSnapshot("");
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 1, snap);
+    }
+
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 10), entry_2_v1);
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 11), buildV3Id(TEST_NAMESPACE_ID, 10));
+        dir->apply(std::move(edit));
+    }
+
+    // restart again
+    dir = restoreFromDisk();
+    {
+        EXPECT_EQ(dir->numPages(), 3);
+        auto snap = dir->createSnapshot("");
+        EXPECT_ENTRY_EQ(entry_1_v1, dir, 1, snap);
+        auto normal_id = getNormalPageIdU64(dir, 11, snap);
+        EXPECT_EQ(normal_id, 10);
+    }
+}
+CATCH
+
+TEST(MultiVersionRefCount, RefAndCollapse)
+try
+{
+    MultiVersionRefCount ref_counts;
+    {
+        ref_counts.incrRefCount(PageVersion(2), 1);
+        ref_counts.incrRefCount(PageVersion(4), 2);
+        ref_counts.incrRefCount(PageVersion(8), 1);
+        ASSERT_EQ(ref_counts.getRefCountInSnap(1), 1);
+        ASSERT_EQ(ref_counts.getRefCountInSnap(2), 2);
+        ASSERT_EQ(ref_counts.getRefCountInSnap(8), 5);
+        ASSERT_EQ(ref_counts.getLatestRefCount(), 5);
+    }
+
+    // decr ref and collapse
+    {
+        ASSERT_EQ(ref_counts.versioned_ref_counts->size(), 3);
+        ref_counts.decrRefCountInSnap(4, 2);
+        ASSERT_EQ(ref_counts.versioned_ref_counts->size(), 2);
+        ASSERT_EQ(ref_counts.getRefCountInSnap(4), 2);
+        ASSERT_EQ(ref_counts.getRefCountInSnap(8), 3);
+        ref_counts.decrRefCountInSnap(10, 2);
+        ASSERT_EQ(ref_counts.getLatestRefCount(), 1);
+        ASSERT_EQ(ref_counts.versioned_ref_counts, nullptr);
+    }
+}
+CATCH
+
+TEST(MultiVersionRefCount, DecrRefWithSeq0)
+try
+{
+    MultiVersionRefCount ref_counts;
+    {
+        ref_counts.incrRefCount(PageVersion(2), 1);
+        ref_counts.incrRefCount(PageVersion(3), 1);
+        ref_counts.incrRefCount(PageVersion(4), 1);
+        ref_counts.incrRefCount(PageVersion(8), 1);
+        ref_counts.incrRefCount(PageVersion(9), 1);
+        ASSERT_EQ(ref_counts.versioned_ref_counts->size(), 5);
+    }
+
+    {
+        ref_counts.decrRefCountInSnap(0, 2);
+        ASSERT_EQ(ref_counts.versioned_ref_counts->size(), 6);
+        ASSERT_EQ(ref_counts.getLatestRefCount(), 4);
+    }
+} // namespace PS::V3::tests
+CATCH
+
 TEST_F(PageDirectoryGCTest, GCPushForward)
 try
 {
-    PageId page_id = 50;
+    PageIdU64 page_id = 50;
 
     /**
      * before GC => {
@@ -1089,7 +1682,7 @@ try
      *   }
      *   snapshot remain: [v3,v5]
      */
-    auto del_entries = dir->gcInMemEntries();
+    auto del_entries = dir->gcInMemEntries({});
     // v1, v2 have been removed.
     ASSERT_EQ(del_entries.size(), 2);
 
@@ -1100,7 +1693,7 @@ try
     // all versions get compacted.
     snapshot3.reset();
     snapshot5.reset();
-    del_entries = dir->gcInMemEntries();
+    del_entries = dir->gcInMemEntries({});
     ASSERT_EQ(del_entries.size(), 2);
 
     auto snapshot_after_gc = dir->createSnapshot();
@@ -1120,8 +1713,8 @@ try
      *   }
      *   snapshot remain: [v3, v5]
      */
-    PageId page_id = 50;
-    PageId another_page_id = 512;
+    PageIdU64 page_id = 50;
+    PageIdU64 another_page_id = 512;
 
     INSERT_ENTRY(another_page_id, 1);
     INSERT_ENTRY(page_id, 2);
@@ -1142,7 +1735,7 @@ try
          *   }
          *   snapshot remain: [v3, v5]
          */
-        const auto & del_entries = dir->gcInMemEntries();
+        const auto & del_entries = dir->gcInMemEntries({});
         // page_id: []; another_page_id: v1 have been removed.
         EXPECT_EQ(del_entries.size(), 1);
     }
@@ -1156,7 +1749,7 @@ try
          *   }
          *   snapshot remain: [v5]
          */
-        const auto & del_entries = dir->gcInMemEntries();
+        const auto & del_entries = dir->gcInMemEntries({});
         // page_id: v2; another_page_id: v3 have been removed.
         EXPECT_EQ(del_entries.size(), 2);
     }
@@ -1170,7 +1763,7 @@ try
          *   }
          *   snapshot remain: []
          */
-        const auto & del_entries = dir->gcInMemEntries();
+        const auto & del_entries = dir->gcInMemEntries({});
         // page_id: v5; another_page_id: v6,v7,v8 have been removed.
         EXPECT_EQ(del_entries.size(), 5);
     }
@@ -1188,8 +1781,8 @@ try
      *   }
      *   snapshot remain: [v1, v3, v5, v10]
      */
-    PageId page_id = 50;
-    PageId another_page_id = 512;
+    PageIdU64 page_id = 50;
+    PageIdU64 another_page_id = 512;
 
     // Push entries
     INSERT_ENTRY_ACQ_SNAP(another_page_id, 1);
@@ -1216,7 +1809,7 @@ try
          *   }
          *   snapshot remain: [v1,v3,v5,v10]
          */
-        auto removed_entries = dir->gcInMemEntries(); // The GC on page_id=50 is blocked by previous `snapshot1`
+        auto removed_entries = dir->gcInMemEntries({}); // The GC on page_id=50 is blocked by previous `snapshot1`
         EXPECT_EQ(removed_entries.size(), 0);
         EXPECT_ENTRY_EQ(entry_v1, dir, another_page_id, snapshot1);
         EXPECT_ENTRY_NOT_EXIST(dir, page_id, snapshot1);
@@ -1237,7 +1830,7 @@ try
         snapshot3.reset();
         snapshot5.reset();
         snapshot10.reset();
-        auto removed_entries = dir->gcInMemEntries();
+        auto removed_entries = dir->gcInMemEntries({});
         EXPECT_EQ(removed_entries.size(), 0);
         EXPECT_ENTRY_EQ(entry_v1, dir, another_page_id, snapshot1);
         EXPECT_ENTRY_NOT_EXIST(dir, page_id, snapshot1);
@@ -1252,7 +1845,7 @@ try
          *   snapshot remain: []
          */
         snapshot1.reset();
-        auto removed_entries = dir->gcInMemEntries(); // this will compact all versions
+        auto removed_entries = dir->gcInMemEntries({}); // this will compact all versions
         // page_id: v3,v5; another_page_id: v1,v2,v4,v6,v7,v8 get removed
         EXPECT_EQ(removed_entries.size(), 8);
 
@@ -1273,8 +1866,8 @@ try
      *   }
      *   snapshot remain: [v5, v8, v9]
      */
-    PageId page_id = 50;
-    PageId another_page_id = 512;
+    PageIdU64 page_id = 50;
+    PageIdU64 another_page_id = 512;
 
     // Push entries
     INSERT_ENTRY(another_page_id, 1);
@@ -1309,7 +1902,7 @@ try
          *   }
          *   snapshot remain: [v5,v8,v9]
          */
-        auto del_entries = dir->gcInMemEntries();
+        auto del_entries = dir->gcInMemEntries({});
         // page_id: v3; another_page_id: v1,v2 have been removed.
         EXPECT_EQ(del_entries.size(), 3);
         ASSERT_EQ(dir->numPages(), 2);
@@ -1327,7 +1920,7 @@ try
         EXPECT_ENTRY_EQ(entry_v8, dir, another_page_id, snapshot8);
         EXPECT_ENTRY_NOT_EXIST(dir, page_id, snapshot9);
         EXPECT_ENTRY_EQ(entry_v9, dir, another_page_id, snapshot9);
-        auto del_entries = dir->gcInMemEntries();
+        auto del_entries = dir->gcInMemEntries({});
         // page_id: v5; another_page_id: v4,v6,v7 have been removed.
         EXPECT_EQ(del_entries.size(), 4);
         ASSERT_EQ(dir->numPages(), 1); // page_id should be removed.
@@ -1343,7 +1936,7 @@ try
         snapshot8.reset();
         EXPECT_ENTRY_NOT_EXIST(dir, page_id, snapshot9);
         EXPECT_ENTRY_EQ(entry_v9, dir, another_page_id, snapshot9);
-        auto del_entries = dir->gcInMemEntries();
+        auto del_entries = dir->gcInMemEntries({});
         // another_page_id: v8 have been removed.
         EXPECT_EQ(del_entries.size(), 1);
     }
@@ -1354,7 +1947,7 @@ try
          *   snapshot remain: []
          */
         snapshot9.reset();
-        auto del_entries = dir->gcInMemEntries();
+        auto del_entries = dir->gcInMemEntries({});
         // another_page_id: v9 have been removed.
         EXPECT_EQ(del_entries.size(), 1);
         ASSERT_EQ(dir->numPages(), 0); // all should be removed.
@@ -1369,8 +1962,8 @@ CATCH
 TEST_F(PageDirectoryGCTest, FullGCApply)
 try
 {
-    PageId page_id = 50;
-    PageId another_page_id = 512;
+    PageIdU64 page_id = 50;
+    PageIdU64 another_page_id = 512;
     INSERT_ENTRY_TO(page_id, 1, 1);
     INSERT_ENTRY_TO(page_id, 2, 2);
     INSERT_ENTRY_TO(another_page_id, 3, 2);
@@ -1378,47 +1971,50 @@ try
     INSERT_ENTRY_TO(page_id, 5, 3);
     INSERT_ENTRY_TO(another_page_id, 6, 1);
 
-    // FIXME: This will copy many outdate pages
     // Full GC get entries
     auto candidate_entries_1 = dir->getEntriesByBlobIds({1});
     EXPECT_EQ(candidate_entries_1.first.size(), 1);
-    EXPECT_EQ(candidate_entries_1.first[1].size(), 3); // 3 entries for 2 page id
+    EXPECT_EQ(candidate_entries_1.first[1].size(), 1); // 1 entries for 1 page id
 
     auto candidate_entries_2_3 = dir->getEntriesByBlobIds({2, 3});
-    EXPECT_EQ(candidate_entries_2_3.first.size(), 2);
+    EXPECT_EQ(candidate_entries_2_3.first.size(), 1);
     const auto & entries_in_file2 = candidate_entries_2_3.first[2];
     const auto & entries_in_file3 = candidate_entries_2_3.first[3];
-    EXPECT_EQ(entries_in_file2.size(), 2); // 2 entries for 1 page id
+    EXPECT_EQ(entries_in_file2.empty(), true);
     EXPECT_EQ(entries_in_file3.size(), 1); // 1 entries for 1 page id
 
     PageEntriesEdit gc_migrate_entries;
     for (const auto & [file_id, entries] : candidate_entries_1.first)
     {
         (void)file_id;
-        for (const auto & [page_id, ver, entry] : entries)
+        for (const auto & [gc_page_id, ver, entry] : entries)
         {
-            gc_migrate_entries.upsertPage(page_id, ver, entry);
+            gc_migrate_entries.upsertPage(gc_page_id, ver, entry);
         }
     }
     for (const auto & [file_id, entries] : candidate_entries_2_3.first)
     {
         (void)file_id;
-        for (const auto & [page_id, ver, entry] : entries)
+        for (const auto & [gc_page_id, ver, entry] : entries)
         {
-            gc_migrate_entries.upsertPage(page_id, ver, entry);
+            gc_migrate_entries.upsertPage(gc_page_id, ver, entry);
         }
     }
 
     // Full GC execute apply
     dir->gcApply(std::move(gc_migrate_entries));
+
+    auto snap = dir->createSnapshot();
+    ASSERT_ENTRY_EQ(entry_v5, dir, page_id, snap);
+    ASSERT_ENTRY_EQ(entry_v6, dir, another_page_id, snap);
 }
 CATCH
 
 TEST_F(PageDirectoryGCTest, MVCCAndFullGCInConcurrent)
 try
 {
-    PageId page_id = 50;
-    PageId another_page_id = 512;
+    PageIdU64 page_id = 50;
+    PageIdU64 another_page_id = 512;
     INSERT_ENTRY_TO(page_id, 1, 1);
     INSERT_ENTRY_TO(page_id, 2, 2);
     INSERT_ENTRY_TO(page_id, 3, 2);
@@ -1429,21 +2025,17 @@ try
 
     EXPECT_EQ(dir->numPages(), 2);
 
-    // 1.1 Full GC get entries for blob_id in [1]
+    // A.1 Full GC get entries for blob_id in [1]
     auto candidate_entries_1 = dir->getEntriesByBlobIds({1});
     EXPECT_EQ(candidate_entries_1.first.size(), 1);
-    EXPECT_EQ(candidate_entries_1.first[1].size(), 3); // 3 entries for 2 page id
+    EXPECT_EQ(candidate_entries_1.first[1].size(), 1); // 1 entries for `another_page_id`
 
     // for blob_id in [2, 3]
     auto candidate_entries_2_3 = dir->getEntriesByBlobIds({2, 3});
-    EXPECT_EQ(candidate_entries_2_3.first.size(), 2);
-    const auto & entries_in_file2 = candidate_entries_2_3.first[2];
-    const auto & entries_in_file3 = candidate_entries_2_3.first[3];
-    EXPECT_EQ(entries_in_file2.size(), 2); // 2 entries for 1 page id
-    EXPECT_EQ(entries_in_file3.size(), 1); // 1 entry for 1 page_id
+    EXPECT_EQ(candidate_entries_2_3.first.empty(), true);
 
-    // 2.1 Execute GC
-    dir->gcInMemEntries();
+    // B.1 Execute GC
+    dir->gcInMemEntries({});
     // `page_id` get removed
     EXPECT_EQ(dir->numPages(), 1);
 
@@ -1451,22 +2043,26 @@ try
     for (const auto & [file_id, entries] : candidate_entries_1.first)
     {
         (void)file_id;
-        for (const auto & [page_id, ver, entry] : entries)
+        for (const auto & [gc_page_id, ver, entry] : entries)
         {
-            gc_migrate_entries.upsertPage(page_id, ver, entry);
+            gc_migrate_entries.upsertPage(gc_page_id, ver, entry);
         }
     }
     for (const auto & [file_id, entries] : candidate_entries_2_3.first)
     {
         (void)file_id;
-        for (const auto & [page_id, ver, entry] : entries)
+        for (const auto & [gc_page_id, ver, entry] : entries)
         {
-            gc_migrate_entries.upsertPage(page_id, ver, entry);
+            gc_migrate_entries.upsertPage(gc_page_id, ver, entry);
         }
     }
 
-    // 1.2 Full GC execute apply
-    ASSERT_THROW({ dir->gcApply(std::move(gc_migrate_entries)); }, DB::Exception);
+    // A.2 Full GC execute apply, upsert `another_page_id`, but we still don't
+    // support Full GC and gcInMem run conncurrently
+    dir->gcApply(std::move(gc_migrate_entries));
+
+    auto snap = dir->createSnapshot();
+    ASSERT_ENTRY_EQ(entry_v6, dir, another_page_id, snap);
 }
 CATCH
 
@@ -1488,7 +2084,7 @@ try
     }
     // entry1 should not be removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_TRUE(outdated_entries.empty());
     }
 
@@ -1500,7 +2096,7 @@ try
     }
     // entry1 get removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_EQ(1, outdated_entries.size());
         EXPECT_SAME_ENTRY(entry1, *outdated_entries.begin());
     }
@@ -1530,7 +2126,7 @@ try
     }
     // entry1 should not be removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_TRUE(outdated_entries.empty());
     }
 
@@ -1543,14 +2139,14 @@ try
     }
     // entry1 get removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_EQ(1, outdated_entries.size());
         EXPECT_SAME_ENTRY(entry1, *outdated_entries.begin());
     }
 }
 CATCH
 
-TEST_F(PageDirectoryGCTest, UpsertOnRefedEntries)
+TEST_F(PageDirectoryGCTest, RewriteRefedId)
 try
 {
     // 10->entry1, 11->10, 12->10
@@ -1573,29 +2169,41 @@ try
     }
     // entry1 should not be removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_TRUE(outdated_entries.empty());
     }
 
-    // upsert 10->entry2
     PageEntryV3 entry2{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry3{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123 + 1024, .checksum = 0x4567};
     {
-        PageEntriesEdit edit;
+        // this will return ref page 11 and 12 that need to be rewritten
+        // to new blob file.
         auto full_gc_entries = dir->getEntriesByBlobIds({1});
+        ASSERT_EQ(full_gc_entries.first.size(), 1);
         auto ids = full_gc_entries.first.at(1);
-        ASSERT_EQ(ids.size(), 1);
+        ASSERT_EQ(ids.size(), 2);
+        ASSERT_EQ(std::get<0>(ids[0]), buildV3Id(TEST_NAMESPACE_ID, 11));
+        ASSERT_EQ(std::get<0>(ids[1]), buildV3Id(TEST_NAMESPACE_ID, 12));
+
+        // Mock full gc happen in BlobStore. upsert 11->entry2, upsert 12->entry3
+        PageEntriesEdit edit;
         edit.upsertPage(std::get<0>(ids[0]), std::get<1>(ids[0]), entry2);
+        edit.upsertPage(std::get<0>(ids[1]), std::get<1>(ids[1]), entry3);
+        // this will rewrite ref page 11, 12 to normal page
         dir->gcApply(std::move(edit));
     }
 
-    auto removed_entries = dir->gcInMemEntries();
+    // page 10 get removed
+    auto removed_entries = dir->gcInMemEntries({});
     ASSERT_EQ(removed_entries.size(), 1);
     EXPECT_SAME_ENTRY(removed_entries[0], entry1);
 
     {
         auto snap = dir->createSnapshot();
         EXPECT_ENTRY_EQ(entry2, dir, 11, snap);
-        EXPECT_ENTRY_EQ(entry2, dir, 12, snap);
+        EXPECT_ENTRY_EQ(entry3, dir, 12, snap);
+        EXPECT_ENTRY_NOT_EXIST(dir, 10, snap);
     }
 
     // del 11->entry2
@@ -1603,18 +2211,197 @@ try
         PageEntriesEdit edit;
         edit.del(buildV3Id(TEST_NAMESPACE_ID, 11));
         dir->apply(std::move(edit));
-        EXPECT_EQ(dir->gcInMemEntries().size(), 0);
+        // entry2 get removed
+        auto outdated_entries = dir->gcInMemEntries({});
+        ASSERT_EQ(1, outdated_entries.size());
+        EXPECT_SAME_ENTRY(entry2, outdated_entries[0]);
     }
-    // del 12->entry2
+    // del 12->entry3
     {
         PageEntriesEdit edit;
         edit.del(buildV3Id(TEST_NAMESPACE_ID, 12));
         dir->apply(std::move(edit));
-        // entry2 get removed
-        auto outdated_entries = dir->gcInMemEntries();
-        EXPECT_EQ(1, outdated_entries.size());
-        EXPECT_SAME_ENTRY(entry2, *outdated_entries.begin());
+        // entry3 get removed
+        auto outdated_entries = dir->gcInMemEntries({});
+        ASSERT_EQ(1, outdated_entries.size());
+        EXPECT_SAME_ENTRY(entry3, outdated_entries[0]);
     }
+
+    ASSERT_EQ(dir->getAllPageIds().empty(), true);
+}
+CATCH
+
+TEST_F(PageDirectoryGCTest, RewriteRefedIdToExternalPage)
+try
+{
+    // 10->entry1, 11->10, 12->10
+    PageEntryV3 entry1{.file_id = 1, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        u128::PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 10), entry1);
+        dir->apply(std::move(edit));
+    }
+    {
+        u128::PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 11), buildV3Id(TEST_NAMESPACE_ID, 10));
+        dir->apply(std::move(edit));
+    }
+    {
+        u128::PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 12), buildV3Id(TEST_NAMESPACE_ID, 10));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 10));
+        dir->apply(std::move(edit));
+    }
+    // 50->ext_id, 51->50
+    {
+        u128::PageEntriesEdit edit;
+        edit.putExternal(buildV3Id(TEST_NAMESPACE_ID, 50));
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 51), buildV3Id(TEST_NAMESPACE_ID, 50));
+        dir->apply(std::move(edit));
+    }
+    // entry1 should not be removed
+    {
+        auto outdated_entries = dir->gcInMemEntries({});
+        EXPECT_TRUE(outdated_entries.empty());
+    }
+
+    PageEntryV3 entry2{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry3{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123 + 1024, .checksum = 0x4567};
+    {
+        // this will return ref page 11 and 12 that need to be rewritten
+        // to new blob file.
+        auto full_gc_entries = dir->getEntriesByBlobIds({1});
+        ASSERT_EQ(full_gc_entries.first.size(), 1);
+        auto ids = full_gc_entries.first.at(1);
+        ASSERT_EQ(ids.size(), 2);
+        ASSERT_EQ(std::get<0>(ids[0]), buildV3Id(TEST_NAMESPACE_ID, 11));
+        ASSERT_EQ(std::get<0>(ids[1]), buildV3Id(TEST_NAMESPACE_ID, 12));
+
+        // Mock full gc happen in BlobStore. upsert 11->entry2, upsert 12->entry3
+        u128::PageEntriesEdit edit;
+        edit.upsertPage(std::get<0>(ids[0]), std::get<1>(ids[0]), entry2);
+        edit.upsertPage(std::get<0>(ids[1]), std::get<1>(ids[1]), entry3);
+        // this will rewrite ref page 11, 12 to normal page
+        dir->gcApply(std::move(edit));
+    }
+
+    // page 10 get removed
+    auto removed_entries = dir->gcInMemEntries({});
+    ASSERT_EQ(removed_entries.size(), 1);
+    EXPECT_SAME_ENTRY(removed_entries[0], entry1);
+
+    {
+        auto snap = dir->createSnapshot();
+        EXPECT_ENTRY_EQ(entry2, dir, 11, snap);
+        EXPECT_ENTRY_EQ(entry3, dir, 12, snap);
+        EXPECT_ENTRY_NOT_EXIST(dir, 10, snap);
+        auto external_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
+        ASSERT_GT(external_ids->count(50), 0);
+    }
+
+    // del 11->entry2
+    {
+        u128::PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 11));
+        dir->apply(std::move(edit));
+        // entry2 get removed
+        auto outdated_entries = dir->gcInMemEntries({});
+        ASSERT_EQ(1, outdated_entries.size());
+        EXPECT_SAME_ENTRY(entry2, outdated_entries[0]);
+    }
+    // del 12->entry3
+    {
+        u128::PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 12));
+        dir->apply(std::move(edit));
+        // entry3 get removed
+        auto outdated_entries = dir->gcInMemEntries({});
+        ASSERT_EQ(1, outdated_entries.size());
+        EXPECT_SAME_ENTRY(entry3, outdated_entries[0]);
+    }
+
+    auto external_ids = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
+    ASSERT_GT(external_ids->count(50), 0);
+    auto all_page_ids = dir->getAllPageIds();
+    ASSERT_EQ(all_page_ids.size(), 2);
+    ASSERT_GT(all_page_ids.count(buildV3Id(TEST_NAMESPACE_ID, 50)), 0);
+    ASSERT_GT(all_page_ids.count(buildV3Id(TEST_NAMESPACE_ID, 51)), 0);
+}
+CATCH
+
+TEST_F(PageDirectoryGCTest, RewriteRefedIdWithConcurrentDelete)
+try
+{
+    // 10->entry1, 11->10, 12->10
+    PageEntryV3 entry1{.file_id = 1, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 10), entry1);
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 11), buildV3Id(TEST_NAMESPACE_ID, 10));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 12), buildV3Id(TEST_NAMESPACE_ID, 10));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 10));
+        dir->apply(std::move(edit));
+    }
+    // entry1 should not be removed
+    {
+        auto outdated_entries = dir->gcInMemEntries({});
+        EXPECT_TRUE(outdated_entries.empty());
+    }
+
+    PageEntryV3 entry2{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry3{.file_id = 2, .size = 1024, .padded_size = 0, .tag = 0, .offset = 0x123 + 1024, .checksum = 0x4567};
+    {
+        // this will return ref page 11 and 12 that need to be rewritten
+        // to new blob file.
+        auto full_gc_entries = dir->getEntriesByBlobIds({1});
+        ASSERT_EQ(full_gc_entries.first.size(), 1);
+        auto ids = full_gc_entries.first.at(1);
+        ASSERT_EQ(ids.size(), 2);
+        ASSERT_EQ(std::get<0>(ids[0]), buildV3Id(TEST_NAMESPACE_ID, 11));
+        ASSERT_EQ(std::get<0>(ids[1]), buildV3Id(TEST_NAMESPACE_ID, 12));
+
+        // unlike `RewriteRefedId`, foreground delete 11, 12 before
+        // full gc apply upserts
+        PageEntriesEdit fore_edit;
+        fore_edit.del(buildV3Id(TEST_NAMESPACE_ID, 11));
+        fore_edit.del(buildV3Id(TEST_NAMESPACE_ID, 12));
+        dir->apply(std::move(fore_edit));
+
+        // full gc ends, apply upserts
+        // upsert 11->entry2
+        // upsert 12->entry3
+        PageEntriesEdit edit;
+        edit.upsertPage(std::get<0>(ids[0]), std::get<1>(ids[0]), entry2);
+        edit.upsertPage(std::get<0>(ids[1]), std::get<1>(ids[1]), entry3);
+        // this will rewrite ref page 11, 12 to normal page
+        dir->gcApply(std::move(edit));
+    }
+
+    // page 10,11,12 get removed
+    auto removed_entries = dir->gcInMemEntries({});
+    ASSERT_EQ(removed_entries.size(), 3);
+    EXPECT_SAME_ENTRY(removed_entries[0], entry1);
+    EXPECT_SAME_ENTRY(removed_entries[1], entry2);
+    EXPECT_SAME_ENTRY(removed_entries[2], entry3);
+
+    {
+        auto snap = dir->createSnapshot();
+        EXPECT_ENTRY_NOT_EXIST(dir, 11, snap);
+        EXPECT_ENTRY_NOT_EXIST(dir, 12, snap);
+        EXPECT_ENTRY_NOT_EXIST(dir, 10, snap);
+    }
+
+    ASSERT_EQ(dir->getAllPageIds().empty(), true);
 }
 CATCH
 
@@ -1635,11 +2422,12 @@ try
     }
     // entry1 should not be removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_TRUE(outdated_entries.empty());
         auto alive_ex_id = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        ASSERT_EQ(alive_ex_id.size(), 1);
-        ASSERT_EQ(*alive_ex_id.begin(), 10);
+        ASSERT_TRUE(alive_ex_id.has_value());
+        ASSERT_EQ(alive_ex_id->size(), 1);
+        ASSERT_EQ(*alive_ex_id->begin(), 10);
     }
 
     // del 11->ext
@@ -1650,10 +2438,11 @@ try
     }
     // entry1 get removed
     {
-        auto outdated_entries = dir->gcInMemEntries();
+        auto outdated_entries = dir->gcInMemEntries({});
         EXPECT_EQ(0, outdated_entries.size());
         auto alive_ex_id = dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        ASSERT_EQ(alive_ex_id.size(), 0);
+        ASSERT_TRUE(alive_ex_id.has_value());
+        ASSERT_EQ(alive_ex_id->size(), 0);
     }
 }
 CATCH
@@ -1699,7 +2488,7 @@ try
         auto normal_id = getNormalPageIdU64(dir, 357, snap);
         EXPECT_EQ(normal_id, 352);
     }
-    dir->gcInMemEntries();
+    dir->gcInMemEntries({});
     {
         auto snap = dir->createSnapshot();
         auto normal_id = getNormalPageIdU64(dir, 357, snap);
@@ -1709,13 +2498,12 @@ try
     auto s0 = dir->createSnapshot();
     auto edit = dir->dumpSnapshotToEdit(s0);
     auto restore_from_edit = [](const PageEntriesEdit & edit) {
-        auto deseri_edit = DB::PS::V3::ser::deserializeFrom(DB::PS::V3::ser::serializeTo(edit));
-        auto ctx = DB::tests::TiFlashTestEnv::getContext();
-        auto provider = ctx.getFileProvider();
+        auto deseri_edit = u128::Serializer::deserializeFrom(u128::Serializer::serializeTo(edit), nullptr);
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
         auto path = getTemporaryPath();
         PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
-        PageDirectoryFactory factory;
-        auto d = factory.createFromEdit(getCurrentTestName(), provider, delegator, deseri_edit);
+        PageDirectoryFactory<u128::FactoryTrait> factory;
+        auto d = factory.createFromEditForTest(getCurrentTestName(), provider, delegator, deseri_edit);
         return d;
     };
     {
@@ -1732,13 +2520,12 @@ TEST_F(PageDirectoryGCTest, DumpAndRestore)
 try
 {
     auto restore_from_edit = [](const PageEntriesEdit & edit) {
-        auto deseri_edit = DB::PS::V3::ser::deserializeFrom(DB::PS::V3::ser::serializeTo(edit));
-        auto ctx = DB::tests::TiFlashTestEnv::getContext();
-        auto provider = ctx.getFileProvider();
+        auto deseri_edit = u128::Serializer::deserializeFrom(u128::Serializer::serializeTo(edit), nullptr);
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
         auto path = getTemporaryPath();
         PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
-        PageDirectoryFactory factory;
-        auto d = factory.createFromEdit(getCurrentTestName(), provider, delegator, deseri_edit);
+        PageDirectoryFactory<u128::FactoryTrait> factory;
+        auto d = factory.createFromEditForTest(getCurrentTestName(), provider, delegator, deseri_edit);
         return d;
     };
 
@@ -1795,10 +2582,11 @@ try
         EXPECT_ANY_THROW(getEntry(restored_dir, 2, temp_snap));
         EXPECT_ANY_THROW(getEntry(restored_dir, 3, temp_snap));
         auto alive_ex = restored_dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ex.size(), 3);
-        EXPECT_GT(alive_ex.count(10), 0);
-        EXPECT_GT(alive_ex.count(20), 0);
-        EXPECT_GT(alive_ex.count(30), 0);
+        ASSERT_TRUE(alive_ex.has_value());
+        EXPECT_EQ(alive_ex->size(), 3);
+        EXPECT_GT(alive_ex->count(10), 0);
+        EXPECT_GT(alive_ex->count(20), 0);
+        EXPECT_GT(alive_ex->count(30), 0);
         EXPECT_SAME_ENTRY(getEntry(restored_dir, 50, temp_snap), entry_50);
         EXPECT_SAME_ENTRY(getEntry(restored_dir, 60, temp_snap), entry_60);
     };
@@ -1833,15 +2621,16 @@ try
         EXPECT_ANY_THROW(getEntry(restored_dir, 2, temp_snap));
         EXPECT_ANY_THROW(getEntry(restored_dir, 3, temp_snap));
         auto alive_ex = restored_dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ex.size(), 2);
-        EXPECT_GT(alive_ex.count(10), 0);
+        ASSERT_TRUE(alive_ex.has_value());
+        EXPECT_EQ(alive_ex->size(), 2);
+        EXPECT_GT(alive_ex->count(10), 0);
         EXPECT_EQ(getNormalPageIdU64(restored_dir, 11, temp_snap), 10);
 
-        EXPECT_GT(alive_ex.count(20), 0);
+        EXPECT_GT(alive_ex->count(20), 0);
         EXPECT_EQ(getNormalPageIdU64(restored_dir, 21, temp_snap), 20);
         EXPECT_EQ(getNormalPageIdU64(restored_dir, 22, temp_snap), 20);
 
-        EXPECT_EQ(alive_ex.count(30), 0); // removed
+        EXPECT_EQ(alive_ex->count(30), 0); // removed
 
         EXPECT_ANY_THROW(getEntry(restored_dir, 50, temp_snap));
         EXPECT_SAME_ENTRY(getEntry(restored_dir, 51, temp_snap), entry_50);
@@ -1873,10 +2662,11 @@ try
         EXPECT_ANY_THROW(getEntry(restored_dir, 2, temp_snap));
         EXPECT_ANY_THROW(getEntry(restored_dir, 3, temp_snap));
         auto alive_ex = restored_dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ex.size(), 0);
-        EXPECT_EQ(alive_ex.count(10), 0); // removed
-        EXPECT_EQ(alive_ex.count(20), 0); // removed
-        EXPECT_EQ(alive_ex.count(30), 0); // removed
+        ASSERT_TRUE(alive_ex.has_value());
+        EXPECT_EQ(alive_ex->size(), 0);
+        EXPECT_EQ(alive_ex->count(10), 0); // removed
+        EXPECT_EQ(alive_ex->count(20), 0); // removed
+        EXPECT_EQ(alive_ex->count(30), 0); // removed
 
         EXPECT_ANY_THROW(getEntry(restored_dir, 50, temp_snap));
         EXPECT_SAME_ENTRY(getEntry(restored_dir, 51, temp_snap), entry_50);
@@ -1905,10 +2695,11 @@ try
         EXPECT_ANY_THROW(getEntry(restored_dir, 2, temp_snap));
         EXPECT_ANY_THROW(getEntry(restored_dir, 3, temp_snap));
         auto alive_ex = restored_dir->getAliveExternalIds(TEST_NAMESPACE_ID);
-        EXPECT_EQ(alive_ex.size(), 0);
-        EXPECT_EQ(alive_ex.count(10), 0); // removed
-        EXPECT_EQ(alive_ex.count(20), 0); // removed
-        EXPECT_EQ(alive_ex.count(30), 0); // removed
+        ASSERT_TRUE(alive_ex.has_value());
+        EXPECT_EQ(alive_ex->size(), 0);
+        EXPECT_EQ(alive_ex->count(10), 0); // removed
+        EXPECT_EQ(alive_ex->count(20), 0); // removed
+        EXPECT_EQ(alive_ex->count(30), 0); // removed
 
         EXPECT_ANY_THROW(getEntry(restored_dir, 50, temp_snap));
         EXPECT_ANY_THROW(getEntry(restored_dir, 51, temp_snap));
@@ -1936,9 +2727,12 @@ try
     Poco::File(fmt::format("{}/{}{}", path, BlobFile::BLOB_PREFIX_NAME, file_id1)).createFile();
     Poco::File(fmt::format("{}/{}{}", path, BlobFile::BLOB_PREFIX_NAME, file_id2)).createFile();
 
-    PageEntryV3 entry_1_v1{.file_id = file_id1, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
-    PageEntryV3 entry_5_v1{.file_id = file_id2, .size = 255, .padded_size = 0, .tag = 0, .offset = 0x100, .checksum = 0x4567};
-    PageEntryV3 entry_5_v2{.file_id = file_id2, .size = 255, .padded_size = 0, .tag = 0, .offset = 0x400, .checksum = 0x4567};
+    PageEntryV3
+        entry_1_v1{.file_id = file_id1, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    PageEntryV3
+        entry_5_v1{.file_id = file_id2, .size = 255, .padded_size = 0, .tag = 0, .offset = 0x100, .checksum = 0x4567};
+    PageEntryV3
+        entry_5_v2{.file_id = file_id2, .size = 255, .padded_size = 0, .tag = 0, .offset = 0x400, .checksum = 0x4567};
     {
         PageEntriesEdit edit;
         edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
@@ -1953,13 +2747,12 @@ try
         dir->apply(std::move(edit));
     }
 
-    auto restore_from_edit = [](const PageEntriesEdit & edit, BlobStats & stats) {
-        auto ctx = ::DB::tests::TiFlashTestEnv::getContext();
-        auto provider = ctx.getFileProvider();
+    auto restore_from_edit = [](PageEntriesEdit & edit, BlobStats & stats) {
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
         auto path = getTemporaryPath();
         PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
-        PageDirectoryFactory factory;
-        auto d = factory.setBlobStats(stats).createFromEdit(getCurrentTestName(), provider, delegator, edit);
+        PageDirectoryFactory<u128::FactoryTrait> factory;
+        auto d = factory.setBlobStats(stats).createFromEditForTest(getCurrentTestName(), provider, delegator, edit);
         return d;
     };
     {
@@ -1997,13 +2790,12 @@ try
     PageEntryV3 entry_50_1{.file_id = 1, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
     PageEntryV3 entry_50_2{.file_id = 2, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
 
-    auto restore_from_edit = [](const PageEntriesEdit & edit) {
-        auto ctx = ::DB::tests::TiFlashTestEnv::getContext();
-        auto provider = ctx.getFileProvider();
+    auto restore_from_edit = [](PageEntriesEdit & edit) {
+        auto provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
         auto path = getTemporaryPath();
         PSDiskDelegatorPtr delegator = std::make_shared<DB::tests::MockDiskDelegatorSingle>(path);
-        PageDirectoryFactory factory;
-        auto d = factory.createFromEdit(getCurrentTestName(), provider, delegator, edit);
+        PageDirectoryFactory<u128::FactoryTrait> factory;
+        auto d = factory.createFromEditForTest(getCurrentTestName(), provider, delegator, edit);
         return d;
     };
 
@@ -2017,6 +2809,108 @@ try
         auto restored_dir = restore_from_edit(edit);
         auto page_ids = restored_dir->getAllPageIds();
         ASSERT_EQ(page_ids.size(), 0);
+    }
+}
+CATCH
+
+TEST_F(PageDirectoryGCTest, IncrRefDuringGC)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 3), buildV3Id(TEST_NAMESPACE_ID, 1));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        dir->apply(std::move(edit));
+    }
+
+    {
+        // begin gc and stop after get lowest seq
+        auto sp_gc = SyncPointCtl::enableInScope("after_PageDirectory::doGC_getLowestSeq");
+        auto th_gc = std::async([&]() { dir->gcInMemEntries({}); });
+        sp_gc.waitAndPause();
+
+        // add a ref during gc
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 5), buildV3Id(TEST_NAMESPACE_ID, 3));
+        dir->apply(std::move(edit));
+
+        // continue gc and finish
+        sp_gc.next();
+        th_gc.get();
+
+        ASSERT_EQ(dir->numPages(), 3);
+    }
+
+    {
+        auto snap = dir->createSnapshot();
+        EXPECT_SAME_ENTRY(entry_1_v1, getEntry(dir, 5, snap));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 3));
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 5));
+        dir->apply(std::move(edit));
+    }
+
+    dir->gcInMemEntries({});
+    ASSERT_EQ(dir->numPages(), 0);
+}
+CATCH
+
+
+TEST_F(PageDirectoryGCTest, IncrRefDuringGC2)
+try
+{
+    PageEntryV3
+        entry_1_v1{.file_id = 50, .size = 7890, .padded_size = 0, .tag = 0, .offset = 0x123, .checksum = 0x4567};
+    {
+        PageEntriesEdit edit;
+        edit.put(buildV3Id(TEST_NAMESPACE_ID, 1), entry_1_v1);
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 2), buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+    {
+        PageEntriesEdit edit;
+        edit.del(buildV3Id(TEST_NAMESPACE_ID, 2));
+        dir->apply(std::move(edit));
+    }
+
+    auto after_get_gc_seq = SyncPointCtl::enableInScope("after_PageDirectory::doGC_getLowestSeq");
+    auto th_gc = std::async([&]() { dir->gcInMemEntries({}); });
+    after_get_gc_seq.waitAndPause();
+
+    // add a ref during gcInMemEntries
+    {
+        PageEntriesEdit edit;
+        edit.ref(buildV3Id(TEST_NAMESPACE_ID, 5), buildV3Id(TEST_NAMESPACE_ID, 1));
+        dir->apply(std::move(edit));
+    }
+
+    after_get_gc_seq.next();
+    th_gc.get();
+
+    {
+        auto snap = dir->createSnapshot();
+        auto normal_id = getNormalPageIdU64(dir, 5, snap);
+        EXPECT_EQ(normal_id, 1);
+        ASSERT_EQ(dir->numPages(), 2);
     }
 }
 CATCH

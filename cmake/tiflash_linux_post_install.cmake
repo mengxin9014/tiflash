@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-find_program (OBJCOPY_PATH NAMES "objcopy")
-find_program (LLVM_OBJCOPY_PATH NAMES "llvm-objcopy${COMPILER_POSTFIX}" "llvm-objcopy")
+find_program(OBJCOPY_EXECUTABLE "objcopy")
 
-if (LLVM_OBJCOPY_PATH)
-    set(CMAKE_OBJCOPY ${LLVM_OBJCOPY_PATH})
-else ()
-    set(CMAKE_OBJCOPY ${OBJCOPY_PATH})
-endif ()
-
-message(STATUS "executing: ${CMAKE_OBJCOPY} --compress-debug-sections ${CMAKE_INSTALL_PREFIX}/tiflash")
-execute_process(COMMAND ${CMAKE_OBJCOPY} --compress-debug-sections ${CMAKE_INSTALL_PREFIX}/tiflash)
+if(OBJCOPY_EXECUTABLE)
+    message(STATUS "Compressing debug sections for ${CMAKE_INSTALL_PREFIX}/tiflash...")
+    execute_process(COMMAND ${OBJCOPY_EXECUTABLE} --compress-debug-sections=zlib-gnu ${CMAKE_INSTALL_PREFIX}/tiflash)
+else()
+    message(WARNING "objcopy not found in PATH. Skipped debug section compression.")
+endif()

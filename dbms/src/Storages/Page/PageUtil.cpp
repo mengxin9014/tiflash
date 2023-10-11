@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,27 @@ UInt32 randInt(UInt32 min, UInt32 max)
     static thread_local std::mt19937 generator;
     std::uniform_int_distribution<UInt32> distribution(min, max);
     return distribution(generator);
+}
+
+std::vector<size_t> getFieldSizes(const std::set<FieldOffsetInsidePage> & field_offsets, size_t data_size)
+{
+    if (field_offsets.empty())
+        return {};
+
+    std::vector<size_t> sizes;
+    sizes.reserve(field_offsets.size());
+    auto iter = field_offsets.begin();
+    size_t prev_field_offset = iter->offset;
+    ++iter;
+    while (iter != field_offsets.end())
+    {
+        sizes.emplace_back(iter->offset - prev_field_offset);
+        prev_field_offset = iter->offset;
+        ++iter;
+    }
+    // the size of last field
+    sizes.emplace_back(data_size - prev_field_offset);
+    return sizes;
 }
 
 } // namespace DB::PageUtil

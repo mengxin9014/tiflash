@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,17 +14,16 @@
 
 #ifndef NO_TIFLASH_INTERNAL_MEMCPY
 
-#if defined(__SSE2__)
-
-#include <common/sse2_memcpy.h>
+#include <common/memcpy.h>
 
 /// This is needed to generate an object file for linking.
 
-extern "C" __attribute__((visibility("default"))) void * memcpy(void * __restrict dst, const void * __restrict src, size_t size)
+extern "C" __attribute__((visibility("default"))) void * memcpy(
+    void * __restrict dst,
+    const void * __restrict src,
+    size_t size)
 {
-    return sse2_inline_memcpy(dst, src, size);
+    return inline_memcpy(dst, src, size);
 }
-
-#endif
 
 #endif

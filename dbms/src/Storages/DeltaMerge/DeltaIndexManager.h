@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -50,7 +50,7 @@ private:
     size_t current_size = 0;
     const size_t max_size;
 
-    Poco::Logger * log;
+    LoggerPtr log;
 
     std::mutex mutex;
 
@@ -60,13 +60,13 @@ private:
 public:
     explicit DeltaIndexManager(size_t max_size_)
         : max_size(max_size_)
-        , log(&Poco::Logger::get("DeltaIndexManager"))
+        , log(Logger::get())
     {}
 
     /// Note that if isLimit() is false, than this method always return 0.
-    size_t currentSize() { return current_size; }
+    size_t currentSize() const { return current_size; }
 
-    bool isLimit() { return max_size != 0; }
+    bool isLimit() const { return max_size != 0; }
 
     /// Put the reference of DeltaIndex into this manager.
     void refreshRef(const DeltaIndexPtr & index);

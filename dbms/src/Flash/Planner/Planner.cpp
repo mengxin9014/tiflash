@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +21,7 @@
 
 namespace DB
 {
-Planner::Planner(
-    Context & context_,
-    const PlanQuerySource & plan_source_)
+Planner::Planner(Context & context_, const PlanQuerySource & plan_source_)
     : context(context_)
     , plan_source(plan_source_)
     , max_streams(context.getMaxStreams())
@@ -52,6 +50,6 @@ void Planner::executeImpl(DAGPipeline & pipeline)
     physical_plan.build(&plan_source.getDAGRequest());
     physical_plan.outputAndOptimize();
 
-    physical_plan.transform(pipeline, context, max_streams);
+    physical_plan.buildBlockInputStream(pipeline, context, max_streams);
 }
 } // namespace DB

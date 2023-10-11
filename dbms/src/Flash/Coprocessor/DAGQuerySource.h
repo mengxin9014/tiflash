@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 
 #pragma once
 
-#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Coprocessor/DAGQueryBlock.h>
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Interpreters/IQuerySource.h>
 
 namespace DB
 {
+class DAGContext;
+
 /// DAGQuerySource is an adaptor between DAG and CH's executeQuery.
 /// TODO: consider to directly use DAGContext instead.
 class DAGQuerySource : public IQuerySource
@@ -34,7 +35,7 @@ public:
 
     std::shared_ptr<DAGQueryBlock> getRootQueryBlock() const { return root_query_block; }
 
-    DAGContext & getDAGContext() const { return *context.getDAGContext(); }
+    DAGContext & getDAGContext() const;
 
 private:
     Context & context;

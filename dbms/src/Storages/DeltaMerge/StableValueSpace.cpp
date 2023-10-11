@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Interpreters/Context.h>
+#include <Interpreters/SharedContexts/Disagg.h>
 #include <Storages/DeltaMerge/DMContext.h>
 #include <Storages/DeltaMerge/DMVersionFilterBlockInputStream.h>
 #include <Storages/DeltaMerge/File/DMFile.h>
 #include <Storages/DeltaMerge/File/DMFileBlockInputStream.h>
 #include <Storages/DeltaMerge/Filter/FilterHelper.h>
+#include <Storages/DeltaMerge/Remote/DataStore/DataStore.h>
 #include <Storages/DeltaMerge/RowKeyFilter.h>
 #include <Storages/DeltaMerge/RowKeyRange.h>
 #include <Storages/DeltaMerge/StableValueSpace.h>
 #include <Storages/DeltaMerge/StoragePool.h>
-#include <Storages/DeltaMerge/WriteBatches.h>
+#include <Storages/DeltaMerge/WriteBatchesImpl.h>
+#include <Storages/Page/V3/Universal/UniversalPageIdFormatImpl.h>
+#include <Storages/Page/V3/Universal/UniversalPageStorage.h>
 #include <Storages/PathPool.h>
 
 namespace DB
@@ -33,7 +38,7 @@ extern const int LOGICAL_ERROR;
 
 namespace DM
 {
-void StableValueSpace::setFiles(const DMFiles & files_, const RowKeyRange & range, DMContext * dm_context)
+void StableValueSpace::setFiles(const DMFiles & files_, const RowKeyRange & range, const DMContext * dm_context)
 {
     UInt64 rows = 0;
     UInt64 bytes = 0;
@@ -46,7 +51,7 @@ void StableValueSpace::setFiles(const DMFiles & files_, const RowKeyRange & rang
             bytes += file->getBytes();
         }
     }
-    else
+    else if (dm_context != nullptr)
     {
         auto index_cache = dm_context->db_context.getGlobalContext().getMinMaxIndexCache();
         for (const auto & file : files_)
@@ -56,10 +61,11 @@ void StableValueSpace::setFiles(const DMFiles & files_, const RowKeyRange & rang
                 index_cache,
                 /*set_cache_if_miss*/ true,
                 {range},
-                EMPTY_FILTER,
+                EMPTY_RS_OPERATOR,
                 {},
                 dm_context->db_context.getFileProvider(),
                 dm_context->getReadLimiter(),
+                dm_context->scan_context,
                 dm_context->tracing_id);
             auto [file_valid_rows, file_valid_bytes] = pack_filter.validRowsAndBytes();
             rows += file_valid_rows;
@@ -72,7 +78,7 @@ void StableValueSpace::setFiles(const DMFiles & files_, const RowKeyRange & rang
     this->files = files_;
 }
 
-void StableValueSpace::saveMeta(WriteBatch & meta_wb)
+void StableValueSpace::saveMeta(WriteBatchWrapper & meta_wb)
 {
     MemoryWriteBuffer buf(0, 8192);
     writeIntBinary(STORAGE_FORMAT_CURRENT.stable, buf);
@@ -86,11 +92,11 @@ void StableValueSpace::saveMeta(WriteBatch & meta_wb)
     meta_wb.putPage(id, 0, buf.tryGetReadBuffer(), data_size);
 }
 
-StableValueSpacePtr StableValueSpace::restore(DMContext & context, PageId id)
+StableValueSpacePtr StableValueSpace::restore(DMContext & context, PageIdU64 id)
 {
     auto stable = std::make_shared<StableValueSpace>(id);
 
-    Page page = context.storage_pool.metaReader()->read(id); // not limit restore
+    Page page = context.storage_pool->metaReader()->read(id); // not limit restore
     ReadBufferFromMemory buf(page.data.begin(), page.data.size());
     UInt64 version, valid_rows, valid_bytes, size;
     readIntBinary(version, buf);
@@ -101,14 +107,104 @@ StableValueSpacePtr StableValueSpace::restore(DMContext & context, PageId id)
     readIntBinary(valid_bytes, buf);
     readIntBinary(size, buf);
     UInt64 page_id;
+    auto remote_data_store = context.db_context.getSharedContextDisagg()->remote_data_store;
     for (size_t i = 0; i < size; ++i)
     {
         readIntBinary(page_id, buf);
 
-        auto file_id = context.storage_pool.dataReader()->getNormalPageId(page_id);
-        auto file_parent_path = context.path_pool.getStableDiskDelegator().getDTFilePath(file_id);
+        DMFilePtr dmfile;
+        auto path_delegate = context.path_pool->getStableDiskDelegator();
+        if (remote_data_store)
+        {
+            auto wn_ps = context.db_context.getWriteNodePageStorage();
+            auto full_page_id = UniversalPageIdFormat::toFullPageId(
+                UniversalPageIdFormat::toFullPrefix(context.keyspace_id, StorageType::Data, context.physical_table_id),
+                page_id);
+            auto full_external_id = wn_ps->getNormalPageId(full_page_id);
+            auto local_external_id = UniversalPageIdFormat::getU64ID(full_external_id);
+            auto remote_data_location = wn_ps->getCheckpointLocation(full_page_id);
+            const auto & lock_key_view = S3::S3FilenameView::fromKey(*(remote_data_location->data_file_id));
+            auto file_oid = lock_key_view.asDataFile().getDMFileOID();
+            RUNTIME_CHECK(file_oid.keyspace_id == context.keyspace_id);
+            RUNTIME_CHECK(file_oid.table_id == context.physical_table_id);
+            auto prepared = remote_data_store->prepareDMFile(file_oid, page_id);
+            dmfile = prepared->restore(DMFile::ReadMetaMode::all());
+            // gc only begin to run after restore so we can safely call addRemoteDTFileIfNotExists here
+            path_delegate.addRemoteDTFileIfNotExists(local_external_id, dmfile->getBytesOnDisk());
+        }
+        else
+        {
+            auto file_id = context.storage_pool->dataReader()->getNormalPageId(page_id);
+            auto file_parent_path = path_delegate.getDTFilePath(file_id);
+            dmfile = DMFile::restore(
+                context.db_context.getFileProvider(),
+                file_id,
+                page_id,
+                file_parent_path,
+                DMFile::ReadMetaMode::all());
+            auto res = path_delegate.updateDTFileSize(file_id, dmfile->getBytesOnDisk());
+            RUNTIME_CHECK_MSG(res, "update dt file size failed, path={}", dmfile->path());
+        }
+        stable->files.push_back(dmfile);
+    }
 
-        auto dmfile = DMFile::restore(context.db_context.getFileProvider(), file_id, page_id, file_parent_path, DMFile::ReadMetaMode::all());
+    stable->valid_rows = valid_rows;
+    stable->valid_bytes = valid_bytes;
+
+    return stable;
+}
+
+StableValueSpacePtr StableValueSpace::createFromCheckpoint( //
+    DMContext & context,
+    UniversalPageStoragePtr temp_ps,
+    PageIdU64 stable_id,
+    WriteBatches & wbs)
+{
+    auto stable = std::make_shared<StableValueSpace>(stable_id);
+
+    auto stable_page_id = UniversalPageIdFormat::toFullPageId(
+        UniversalPageIdFormat::toFullPrefix(context.keyspace_id, StorageType::Meta, context.physical_table_id),
+        stable_id);
+    auto page = temp_ps->read(stable_page_id);
+    ReadBufferFromMemory buf(page.data.begin(), page.data.size());
+
+    // read stable meta info
+    UInt64 version, valid_rows, valid_bytes, size;
+    {
+        readIntBinary(version, buf);
+        if (version != StableFormat::V1)
+            throw Exception("Unexpected version: " + DB::toString(version));
+
+        readIntBinary(valid_rows, buf);
+        readIntBinary(valid_bytes, buf);
+        readIntBinary(size, buf);
+    }
+
+    auto remote_data_store = context.db_context.getSharedContextDisagg()->remote_data_store;
+    for (size_t i = 0; i < size; ++i)
+    {
+        UInt64 page_id;
+        readIntBinary(page_id, buf);
+        auto full_page_id = UniversalPageIdFormat::toFullPageId(
+            UniversalPageIdFormat::toFullPrefix(context.keyspace_id, StorageType::Data, context.physical_table_id),
+            page_id);
+        auto remote_data_location = temp_ps->getCheckpointLocation(full_page_id);
+        auto data_key_view = S3::S3FilenameView::fromKey(*(remote_data_location->data_file_id)).asDataFile();
+        auto file_oid = data_key_view.getDMFileOID();
+        auto data_key = data_key_view.toFullKey();
+        auto delegator = context.path_pool->getStableDiskDelegator();
+        auto new_local_page_id = context.storage_pool->newDataPageIdForDTFile(delegator, __PRETTY_FUNCTION__);
+        PS::V3::CheckpointLocation loc{
+            .data_file_id = std::make_shared<String>(data_key),
+            .offset_in_file = 0,
+            .size_in_file = 0,
+        };
+        wbs.data.putRemoteExternal(new_local_page_id, loc);
+        auto prepared = remote_data_store->prepareDMFile(file_oid, new_local_page_id);
+        auto dmfile = prepared->restore(DMFile::ReadMetaMode::all());
+        wbs.writeLogAndData();
+        // new_local_page_id is already applied to PageDirectory so we can safely call addRemoteDTFileIfNotExists here
+        delegator.addRemoteDTFileIfNotExists(new_local_page_id, dmfile->getBytesOnDisk());
         stable->files.push_back(dmfile);
     }
 
@@ -170,10 +266,19 @@ String StableValueSpace::getDMFilesString()
     return s;
 }
 
-void StableValueSpace::enableDMFilesGC()
+void StableValueSpace::enableDMFilesGC(DMContext & context)
 {
-    for (auto & file : files)
-        file->enableGC();
+    if (auto data_store = context.db_context.getSharedContextDisagg()->remote_data_store; !data_store)
+    {
+        for (auto & file : files)
+            file->enableGC();
+    }
+    else
+    {
+        auto delegator = context.path_pool->getStableDiskDelegator();
+        for (auto & file : files)
+            delegator.enableGCForRemoteDTFile(file->fileId());
+    }
 }
 
 void StableValueSpace::recordRemovePacksPages(WriteBatches & wbs) const
@@ -186,7 +291,10 @@ void StableValueSpace::recordRemovePacksPages(WriteBatches & wbs) const
     }
 }
 
-void StableValueSpace::calculateStableProperty(const DMContext & context, const RowKeyRange & rowkey_range, bool is_common_handle)
+void StableValueSpace::calculateStableProperty(
+    const DMContext & context,
+    const RowKeyRange & rowkey_range,
+    bool is_common_handle)
 {
     property.gc_hint_version = std::numeric_limits<UInt64>::max();
     property.num_versions = 0;
@@ -220,11 +328,12 @@ void StableValueSpace::calculateStableProperty(const DMContext & context, const 
             // If we pass `segment_range` instead,
             // then the returned stream is a `SkippableBlockInputStream` which will complicate the implementation
             DMFileBlockInputStreamBuilder builder(context.db_context);
-            BlockInputStreamPtr data_stream = builder
-                                                  .setRowsThreshold(std::numeric_limits<UInt64>::max()) // because we just read one pack at a time
-                                                  .onlyReadOnePackEveryTime()
-                                                  .setTracingID(fmt::format("{}-calculateStableProperty", context.tracing_id))
-                                                  .build(file, read_columns, RowKeyRanges{rowkey_range});
+            BlockInputStreamPtr data_stream
+                = builder
+                      .setRowsThreshold(std::numeric_limits<UInt64>::max()) // because we just read one pack at a time
+                      .onlyReadOnePackEveryTime()
+                      .setTracingID(fmt::format("{}-calculateStableProperty", context.tracing_id))
+                      .build(file, read_columns, RowKeyRanges{rowkey_range}, context.scan_context);
             auto mvcc_stream = std::make_shared<DMVersionFilterBlockInputStream<DM_VERSION_FILTER_MODE_COMPACT>>(
                 data_stream,
                 read_columns,
@@ -255,30 +364,25 @@ void StableValueSpace::calculateStableProperty(const DMContext & context, const 
             context.db_context.getGlobalContext().getMinMaxIndexCache(),
             /*set_cache_if_miss*/ false,
             {rowkey_range},
-            EMPTY_FILTER,
+            EMPTY_RS_OPERATOR,
             {},
             context.db_context.getFileProvider(),
             context.getReadLimiter(),
+            context.scan_context,
             context.tracing_id);
-        const auto & use_packs = pack_filter.getUsePacks();
+        const auto & use_packs = pack_filter.getUsePacksConst();
         size_t new_pack_properties_index = 0;
-        bool use_new_pack_properties = pack_properties.property_size() == 0;
+        const bool use_new_pack_properties = pack_properties.property_size() == 0;
         if (use_new_pack_properties)
         {
-            size_t use_packs_count = 0;
-            for (auto is_used : use_packs)
-            {
-                if (is_used)
-                    use_packs_count += 1;
-            }
-            if (unlikely((size_t)new_pack_properties.property_size() != use_packs_count))
-            {
-                throw Exception(
-                    fmt::format("size doesn't match [new_pack_properties_size={}] [use_packs_size={}]", new_pack_properties.property_size(), use_packs_count),
-                    ErrorCodes::LOGICAL_ERROR);
-            }
+            const size_t use_packs_count = std::count(use_packs.begin(), use_packs.end(), true);
+            RUNTIME_CHECK_MSG(
+                static_cast<size_t>(new_pack_properties.property_size()) == use_packs_count,
+                "size doesn't match, new_pack_properties_size={} use_packs_size={}",
+                new_pack_properties.property_size(),
+                use_packs_count);
         }
-        for (size_t pack_id = 0; pack_id < use_packs.size(); pack_id++)
+        for (size_t pack_id = 0; pack_id < use_packs.size(); ++pack_id)
         {
             if (!use_packs[pack_id])
                 continue;
@@ -334,8 +438,7 @@ void StableValueSpace::drop(const FileProviderPtr & file_provider)
     }
 }
 
-SkippableBlockInputStreamPtr
-StableValueSpace::Snapshot::getInputStream(
+SkippableBlockInputStreamPtr StableValueSpace::Snapshot::getInputStream(
     const DMContext & context,
     const ColumnDefines & read_columns,
     const RowKeyRanges & rowkey_ranges,
@@ -344,26 +447,51 @@ StableValueSpace::Snapshot::getInputStream(
     size_t expected_block_size,
     bool enable_handle_clean_read,
     bool is_fast_scan,
-    bool enable_del_clean_read)
+    bool enable_del_clean_read,
+    const std::vector<IdSetPtr> & read_packs,
+    bool need_row_id)
 {
-    LOG_DEBUG(log, "max_data_version: {}, enable_handle_clean_read: {}, is_fast_mode: {}, enable_del_clean_read: {}", max_data_version, enable_handle_clean_read, is_fast_scan, enable_del_clean_read);
+    LOG_DEBUG(
+        log,
+        "start_ts: {}, enable_handle_clean_read: {}, is_fast_mode: {}, enable_del_clean_read: {}",
+        max_data_version,
+        enable_handle_clean_read,
+        is_fast_scan,
+        enable_del_clean_read);
     SkippableBlockInputStreams streams;
-
+    std::vector<size_t> rows;
+    streams.reserve(stable->files.size());
+    rows.reserve(stable->files.size());
     for (size_t i = 0; i < stable->files.size(); i++)
     {
         DMFileBlockInputStreamBuilder builder(context.db_context);
-        builder
-            .enableCleanRead(enable_handle_clean_read, is_fast_scan, enable_del_clean_read, max_data_version)
+        builder.enableCleanRead(enable_handle_clean_read, is_fast_scan, enable_del_clean_read, max_data_version)
             .setRSOperator(filter)
             .setColumnCache(column_caches[i])
             .setTracingID(context.tracing_id)
-            .setRowsThreshold(expected_block_size);
-        streams.push_back(builder.build(stable->files[i], read_columns, rowkey_ranges));
+            .setRowsThreshold(expected_block_size)
+            .setReadPacks(read_packs.size() > i ? read_packs[i] : nullptr);
+        streams.push_back(builder.build(stable->files[i], read_columns, rowkey_ranges, context.scan_context));
+        rows.push_back(stable->files[i]->getRows());
     }
-    return std::make_shared<ConcatSkippableBlockInputStream>(streams);
+    if (need_row_id)
+    {
+        return std::make_shared<ConcatSkippableBlockInputStream</*need_row_id*/ true>>(
+            streams,
+            std::move(rows),
+            context.scan_context);
+    }
+    else
+    {
+        return std::make_shared<ConcatSkippableBlockInputStream</*need_row_id*/ false>>(
+            streams,
+            std::move(rows),
+            context.scan_context);
+    }
 }
 
-RowsAndBytes StableValueSpace::Snapshot::getApproxRowsAndBytes(const DMContext & context, const RowKeyRange & range) const
+RowsAndBytes StableValueSpace::Snapshot::getApproxRowsAndBytes(const DMContext & context, const RowKeyRange & range)
+    const
 {
     // Avoid unnecessary reading IO
     if (valid_rows == 0 || range.none())
@@ -386,9 +514,10 @@ RowsAndBytes StableValueSpace::Snapshot::getApproxRowsAndBytes(const DMContext &
             IdSetPtr{},
             context.db_context.getFileProvider(),
             context.getReadLimiter(),
+            context.scan_context,
             context.tracing_id);
         const auto & pack_stats = f->getPackStats();
-        const auto & use_packs = filter.getUsePacks();
+        const auto & use_packs = filter.getUsePacksConst();
         for (size_t i = 0; i < pack_stats.size(); ++i)
         {
             if (use_packs[i])
@@ -430,6 +559,7 @@ StableValueSpace::Snapshot::getAtLeastRowsAndBytes(const DMContext & context, co
             IdSetPtr{},
             context.db_context.getFileProvider(),
             context.getReadLimiter(),
+            context.scan_context,
             context.tracing_id);
         const auto & handle_filter_result = filter.getHandleRes();
         if (file_idx == 0)
@@ -462,6 +592,54 @@ StableValueSpace::Snapshot::getAtLeastRowsAndBytes(const DMContext & context, co
     }
 
     return ret;
+}
+
+static size_t defaultValueBytes(const Field & f)
+{
+    switch (f.getType())
+    {
+    case Field::Types::Decimal32:
+        return 4;
+    case Field::Types::UInt64:
+    case Field::Types::Int64:
+    case Field::Types::Float64:
+    case Field::Types::Decimal64:
+        return 8;
+    case Field::Types::UInt128:
+    case Field::Types::Int128:
+    case Field::Types::Decimal128:
+        return 16;
+    case Field::Types::Int256:
+    case Field::Types::Decimal256:
+        return 32;
+    case Field::Types::String:
+        return f.get<String>().size();
+    default: // Null, Array, Tuple. In fact, it should not be Array or Tuple here.
+        // But we don't throw exceptions here because it is not the critical path.
+        return 1;
+    }
+}
+
+size_t StableValueSpace::avgRowBytes(const ColumnDefines & read_columns)
+{
+    size_t avg_bytes = 0;
+    if (likely(!files.empty()))
+    {
+        const auto & file = files.front();
+        for (const auto & col : read_columns)
+        {
+            if (file->isColumnExist(col.id))
+            {
+                const auto & stat = file->getColumnStat(col.id);
+                avg_bytes += stat.avg_size;
+            }
+            else
+            {
+                avg_bytes += defaultValueBytes(col.default_value);
+            }
+        }
+    }
+    return avg_bytes;
 }
 
 } // namespace DM

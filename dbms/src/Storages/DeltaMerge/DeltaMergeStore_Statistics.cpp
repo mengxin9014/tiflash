@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,76 +14,73 @@
 
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/Segment.h>
+#include <Storages/DeltaMerge/StoragePool.h>
 #include <Storages/Page/PageStorage.h>
-#include <Storages/Page/V2/VersionSet/PageEntriesVersionSetWithDelta.h>
 
 namespace DB
 {
 namespace DM
 {
 
-static inline auto *
-toConcreteSnapshot(const DB::PageStorage::SnapshotPtr & ptr)
-{
-    return dynamic_cast<DB::PS::V2::PageEntriesVersionSetWithDelta::Snapshot *>(ptr.get());
-}
-
 StoreStats DeltaMergeStore::getStoreStats()
 {
-    std::shared_lock lock(read_write_mutex);
-
     StoreStats stat;
 
     if (shutdown_called.load(std::memory_order_relaxed))
         return stat;
 
-    stat.segment_count = segments.size();
-
     Int64 total_placed_rows = 0;
     Int64 total_delta_cache_rows = 0;
     Float64 total_delta_cache_size = 0;
     Int64 total_delta_valid_cache_rows = 0;
-    for (const auto & [handle, segment] : segments)
     {
-        UNUSED(handle);
-        const auto & delta = segment->getDelta();
-        const auto & stable = segment->getStable();
+        std::shared_lock lock(read_write_mutex);
+        stat.segment_count = segments.size();
 
-        total_placed_rows += delta->getPlacedDeltaRows();
-
-        if (delta->getColumnFileCount())
+        for (const auto & [handle, segment] : segments)
         {
-            stat.total_rows += delta->getRows();
-            stat.total_size += delta->getBytes();
+            UNUSED(handle);
+            const auto & delta = segment->getDelta();
+            const auto & stable = segment->getStable();
 
-            stat.total_delete_ranges += delta->getDeletes();
+            total_placed_rows += delta->getPlacedDeltaRows();
 
-            stat.delta_count += 1;
-            stat.total_pack_count_in_delta += delta->getColumnFileCount();
+            if (delta->getColumnFileCount())
+            {
+                stat.total_rows += delta->getRows();
+                stat.total_size += delta->getBytes();
 
-            stat.total_delta_rows += delta->getRows();
-            stat.total_delta_size += delta->getBytes();
+                stat.total_delete_ranges += delta->getDeletes();
 
-            stat.delta_index_size += delta->getDeltaIndexBytes();
+                stat.delta_count += 1;
+                const auto num_delta_column_file = delta->getColumnFileCount();
+                stat.total_pack_count_in_delta += num_delta_column_file;
+                stat.max_pack_count_in_delta = std::max(stat.max_pack_count_in_delta, num_delta_column_file);
 
-            total_delta_cache_rows += delta->getTotalCacheRows();
-            total_delta_cache_size += delta->getTotalCacheBytes();
-            total_delta_valid_cache_rows += delta->getValidCacheRows();
+                stat.total_delta_rows += delta->getRows();
+                stat.total_delta_size += delta->getBytes();
+
+                stat.delta_index_size += delta->getDeltaIndexBytes();
+
+                total_delta_cache_rows += delta->getTotalCacheRows();
+                total_delta_cache_size += delta->getTotalCacheBytes();
+                total_delta_valid_cache_rows += delta->getValidCacheRows();
+            }
+
+            if (stable->getDMFilesPacks())
+            {
+                stat.total_rows += stable->getRows();
+                stat.total_size += stable->getBytes();
+
+                stat.stable_count += 1;
+                stat.total_pack_count_in_stable += stable->getDMFilesPacks();
+
+                stat.total_stable_rows += stable->getRows();
+                stat.total_stable_size += stable->getBytes();
+                stat.total_stable_size_on_disk += stable->getDMFilesBytesOnDisk();
+            }
         }
-
-        if (stable->getDMFilesPacks())
-        {
-            stat.total_rows += stable->getRows();
-            stat.total_size += stable->getBytes();
-
-            stat.stable_count += 1;
-            stat.total_pack_count_in_stable += stable->getDMFilesPacks();
-
-            stat.total_stable_rows += stable->getRows();
-            stat.total_stable_size += stable->getBytes();
-            stat.total_stable_size_on_disk += stable->getDMFilesBytesOnDisk();
-        }
-    }
+    } // access to `segments` end
 
     stat.delta_rate_rows = static_cast<Float64>(stat.total_delta_rows) / stat.total_rows;
     stat.delta_rate_segments = static_cast<Float64>(stat.delta_count) / stat.segment_count;
@@ -91,7 +88,8 @@ StoreStats DeltaMergeStore::getStoreStats()
     stat.delta_placed_rate = static_cast<Float64>(total_placed_rows) / stat.total_delta_rows;
     stat.delta_cache_size = total_delta_cache_size;
     stat.delta_cache_rate = static_cast<Float64>(total_delta_valid_cache_rows) / stat.total_delta_rows;
-    stat.delta_cache_wasted_rate = static_cast<Float64>(total_delta_cache_rows - total_delta_valid_cache_rows) / total_delta_valid_cache_rows;
+    stat.delta_cache_wasted_rate
+        = static_cast<Float64>(total_delta_cache_rows - total_delta_valid_cache_rows) / total_delta_valid_cache_rows;
 
     stat.avg_segment_rows = static_cast<Float64>(stat.total_rows) / stat.segment_count;
     stat.avg_segment_size = static_cast<Float64>(stat.total_size) / stat.segment_count;
@@ -111,68 +109,31 @@ StoreStats DeltaMergeStore::getStoreStats()
     stat.avg_pack_rows_in_stable = static_cast<Float64>(stat.total_stable_rows) / stat.total_pack_count_in_stable;
     stat.avg_pack_size_in_stable = static_cast<Float64>(stat.total_stable_size) / stat.total_pack_count_in_stable;
 
-    static const String useless_tracing_id("DeltaMergeStore::getStat");
+    // Only collect the snapshot stats for each table when PageStorage V2 is enabled.
+    // Collecting snapshot stats on the global PageStorage V3 for each table will cause too many
+    // waste on CPU and lock contention. Which cause slow queries.
+    if (storage_pool->getPageStorageRunMode() == PageStorageRunMode::ONLY_V2)
     {
-        auto snaps_stat = storage_pool->dataReader()->getSnapshotsStat();
-        stat.storage_stable_num_snapshots = snaps_stat.num_snapshots;
-        stat.storage_stable_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
-        stat.storage_stable_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
-        stat.storage_stable_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
-        PageStorage::SnapshotPtr stable_snapshot = storage_pool->dataReader()->getSnapshot(useless_tracing_id);
-        if (const auto * concrete_snap = toConcreteSnapshot(stable_snapshot); concrete_snap != nullptr)
         {
-            if (const auto * const version = concrete_snap->version(); version != nullptr)
-            {
-                stat.storage_stable_num_pages = version->numPages();
-                stat.storage_stable_num_normal_pages = version->numNormalPages();
-                stat.storage_stable_max_page_id = version->maxId();
-            }
-            else
-            {
-                LOG_ERROR(log, "Can't get any version from current snapshot, type=data");
-            }
+            auto snaps_stat = storage_pool->dataReader()->getSnapshotsStat();
+            stat.storage_stable_num_snapshots = snaps_stat.num_snapshots;
+            stat.storage_stable_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
+            stat.storage_stable_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
+            stat.storage_stable_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
         }
-    }
-    {
-        auto snaps_stat = storage_pool->logReader()->getSnapshotsStat();
-        stat.storage_delta_num_snapshots = snaps_stat.num_snapshots;
-        stat.storage_delta_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
-        stat.storage_delta_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
-        stat.storage_delta_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
-        PageStorage::SnapshotPtr log_snapshot = storage_pool->logReader()->getSnapshot(useless_tracing_id);
-        if (const auto * concrete_snap = toConcreteSnapshot(log_snapshot); concrete_snap != nullptr)
         {
-            if (const auto * const version = concrete_snap->version(); version != nullptr)
-            {
-                stat.storage_delta_num_pages = version->numPages();
-                stat.storage_delta_num_normal_pages = version->numNormalPages();
-                stat.storage_delta_max_page_id = version->maxId();
-            }
-            else
-            {
-                LOG_ERROR(log, "Can't get any version from current snapshot, type=log");
-            }
+            auto snaps_stat = storage_pool->logReader()->getSnapshotsStat();
+            stat.storage_delta_num_snapshots = snaps_stat.num_snapshots;
+            stat.storage_delta_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
+            stat.storage_delta_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
+            stat.storage_delta_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
         }
-    }
-    {
-        auto snaps_stat = storage_pool->metaReader()->getSnapshotsStat();
-        stat.storage_meta_num_snapshots = snaps_stat.num_snapshots;
-        stat.storage_meta_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
-        stat.storage_meta_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
-        stat.storage_meta_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
-        PageStorage::SnapshotPtr meta_snapshot = storage_pool->metaReader()->getSnapshot(useless_tracing_id);
-        if (const auto * concrete_snap = toConcreteSnapshot(meta_snapshot); concrete_snap != nullptr)
         {
-            if (const auto * const version = concrete_snap->version(); version != nullptr)
-            {
-                stat.storage_meta_num_pages = version->numPages();
-                stat.storage_meta_num_normal_pages = version->numNormalPages();
-                stat.storage_meta_max_page_id = version->maxId();
-            }
-            else
-            {
-                LOG_ERROR(log, "Can't get any version from current snapshot, type=meta");
-            }
+            auto snaps_stat = storage_pool->metaReader()->getSnapshotsStat();
+            stat.storage_meta_num_snapshots = snaps_stat.num_snapshots;
+            stat.storage_meta_oldest_snapshot_lifetime = snaps_stat.longest_living_seconds;
+            stat.storage_meta_oldest_snapshot_thread_id = snaps_stat.longest_living_from_thread_id;
+            stat.storage_meta_oldest_snapshot_tracing_id = snaps_stat.longest_living_from_tracing_id;
         }
     }
 

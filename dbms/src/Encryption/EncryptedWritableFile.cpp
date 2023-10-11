@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/Exception.h>
 #include <Encryption/EncryptedWritableFile.h>
 
 namespace DB
 {
+namespace ErrorCodes
+{
+extern const int NOT_IMPLEMENTED;
+} // namespace ErrorCodes
 void EncryptedWritableFile::open()
 {
     file->open();
@@ -37,6 +42,12 @@ ssize_t EncryptedWritableFile::pwrite(char * buf, size_t size, off_t offset) con
 {
     stream->encrypt(offset, buf, size);
     return file->pwrite(buf, size, offset);
+}
+
+off_t EncryptedWritableFile::seek(off_t offset, int whence) const
+{
+    UNUSED(offset, whence);
+    throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED);
 }
 
 } // namespace DB

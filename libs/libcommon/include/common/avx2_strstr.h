@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,21 +19,13 @@
 namespace mem_utils::details
 {
 
-FLATTEN_INLINE_PURE static inline uint32_t get_block32_cmp_eq_mask(
-    const void * s,
-    const Block32 & check_block)
-{
-    /*
-    vpcmpeqb  ymm0, ymm0, ymmword ptr [...]
-    */
-    // `_mm256_loadu_si256` and `_mm256_load_si256` are same in such case
-    const auto block = load_block32(s);
-    uint32_t mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(block, check_block));
-    return mask;
-}
-
 template <typename F>
-ALWAYS_INLINE static inline bool check_aligned_block32_may_exceed(const char * src, ssize_t n, const char *& res, const Block32 & check_block, F && callback)
+ALWAYS_INLINE static inline bool check_aligned_block32_may_exceed(
+    const char * src,
+    ssize_t n,
+    const char *& res,
+    const Block32 & check_block,
+    F && callback)
 {
     auto mask = get_block32_cmp_eq_mask(src, check_block);
     for (; mask;)
@@ -58,7 +50,11 @@ ALWAYS_INLINE static inline bool check_aligned_block32_may_exceed(const char * s
 }
 
 template <typename F>
-ALWAYS_INLINE static inline bool check_block32x1(const char * src, const char *& res, const Block32 & check_block, F && callback)
+ALWAYS_INLINE static inline bool check_block32x1(
+    const char * src,
+    const char *& res,
+    const Block32 & check_block,
+    F && callback)
 {
     auto mask = get_block32_cmp_eq_mask(src, check_block);
     for (; mask;)
@@ -75,14 +71,16 @@ ALWAYS_INLINE static inline bool check_block32x1(const char * src, const char *&
 }
 
 template <typename F>
-ALWAYS_INLINE static inline bool check_block32x4(const char * src, const char *& res, const Block32 & check_block, F && callback)
+ALWAYS_INLINE static inline bool check_block32x4(
+    const char * src,
+    const char *& res,
+    const Block32 & check_block,
+    F && callback)
 {
     {
         uint32_t data{};
         for (size_t i = 0; i < AVX2_UNROLL_NUM; ++i)
-            data |= get_block32_cmp_eq_mask(
-                src + BLOCK32_SIZE * i,
-                check_block);
+            data |= get_block32_cmp_eq_mask(src + BLOCK32_SIZE * i, check_block);
 
         if (data)
         {
@@ -97,9 +95,7 @@ ALWAYS_INLINE static inline bool check_block32x4(const char * src, const char *&
     for (size_t i = 0; i < AVX2_UNROLL_NUM; ++i)
     {
         const auto * start = src + BLOCK32_SIZE * i;
-        auto mask = get_block32_cmp_eq_mask(
-            start,
-            check_block);
+        auto mask = get_block32_cmp_eq_mask(start, check_block);
         for (; mask;)
         {
             auto c = rightmost_bit_one_index(mask);
@@ -221,9 +217,7 @@ ALWAYS_INLINE static inline const char * avx2_strstr_impl(const char * src, size
             src,
             needle[0],
             n,
-            [&](const char *) constexpr {
-                return true;
-            });
+            [&](const char *) constexpr { return true; });
     }
         M(2);
         M(3);
@@ -248,12 +242,13 @@ ALWAYS_INLINE static inline const char * avx2_strstr_impl(const char * src, size
 #undef M
 }
 
-ALWAYS_INLINE static inline size_t avx2_strstr(const char * src, size_t n, const char * needle, size_t k)
-{
-#if defined(ADDRESS_SANITIZER)
-    return std::string_view{src, n}.find({needle, k}); // memchr@plt -> bcmp@plt
+#if defined(MEM_UTILS_FUNC_NO_SANITIZE)
+MEM_UTILS_FUNC_NO_SANITIZE
+#else
+ALWAYS_INLINE static inline
 #endif
-
+size_t avx2_strstr(const char * src, size_t n, const char * needle, size_t k)
+{
     const auto * p = avx2_strstr_impl(src, n, needle, k);
     return p ? p - src : std::string_view::npos;
 }
@@ -261,12 +256,14 @@ ALWAYS_INLINE static inline size_t avx2_strstr(std::string_view src, std::string
 {
     return avx2_strstr(src.data(), src.size(), needle.data(), needle.size());
 }
-ALWAYS_INLINE static inline const char * avx2_memchr(const char * src, size_t n, char target)
-{
-#if defined(ADDRESS_SANITIZER)
-    return static_cast<const char *>(std::memchr(src, target, n)); // memchr@plt
-#endif
 
+#if defined(MEM_UTILS_FUNC_NO_SANITIZE)
+MEM_UTILS_FUNC_NO_SANITIZE
+#else
+ALWAYS_INLINE static inline
+#endif
+const char * avx2_memchr(const char * src, size_t n, char target)
+{
     if (unlikely(n < 1))
     {
         return nullptr;
@@ -275,8 +272,6 @@ ALWAYS_INLINE static inline const char * avx2_memchr(const char * src, size_t n,
         src,
         target,
         n,
-        [&](const char *) constexpr {
-            return true;
-        });
+        [&](const char *) constexpr { return true; });
 }
 } // namespace mem_utils::details

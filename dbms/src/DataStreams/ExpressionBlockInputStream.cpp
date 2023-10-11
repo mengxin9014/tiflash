@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,17 +27,6 @@ ExpressionBlockInputStream::ExpressionBlockInputStream(
     children.push_back(input);
 }
 
-Block ExpressionBlockInputStream::getTotals()
-{
-    if (auto * child = dynamic_cast<IProfilingBlockInputStream *>(&*children.back()))
-    {
-        totals = child->getTotals();
-        expression->executeOnTotals(totals);
-    }
-
-    return totals;
-}
-
 Block ExpressionBlockInputStream::getHeader() const
 {
     Block res = children.back()->getHeader();
@@ -53,5 +42,4 @@ Block ExpressionBlockInputStream::readImpl()
     expression->execute(res);
     return res;
 }
-
 } // namespace DB

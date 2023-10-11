@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,8 +24,9 @@
 #include <IO/Progress.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
+#include <Interpreters/Context.h>
 #include <Poco/Net/TCPServerConnection.h>
-#include <Storages/Transaction/RegionLockInfo.h>
+#include <Storages/KVStore/Read/RegionLockInfo.h>
 
 #include "IServer.h"
 
@@ -74,15 +75,9 @@ struct QueryState
     std::unique_ptr<TimeoutSetter> timeout_setter;
 
 
-    void reset()
-    {
-        *this = QueryState();
-    }
+    void reset() { *this = QueryState(); }
 
-    bool empty()
-    {
-        return is_empty;
-    }
+    bool empty() { return is_empty; }
 };
 
 
@@ -153,7 +148,6 @@ private:
     void sendProgress();
     void sendEndOfStream();
     void sendProfileInfo();
-    void sendTotals();
     void sendExtremes();
 
     /// Creates state.block_in/block_out for blocks read/write, depending on whether compression is enabled.

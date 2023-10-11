@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ namespace DB::DM
 {
 SegmentReadTaskScheduler::SegmentReadTaskScheduler()
     : stop(false)
-    , log(&Poco::Logger::get("SegmentReadTaskScheduler"))
+    , log(Logger::get())
 {
     sched_thread = std::thread(&SegmentReadTaskScheduler::schedLoop, this);
 }
@@ -33,6 +33,7 @@ SegmentReadTaskScheduler::~SegmentReadTaskScheduler()
 void SegmentReadTaskScheduler::add(const SegmentReadTaskPoolPtr & pool)
 {
     Stopwatch sw_add;
+    std::lock_guard add_lock(add_mtx);
     std::lock_guard lock(mtx);
     Stopwatch sw_do_add;
     read_pools.add(pool);
@@ -41,17 +42,19 @@ void SegmentReadTaskScheduler::add(const SegmentReadTaskPoolPtr & pool)
     for (const auto & pa : tasks)
     {
         auto seg_id = pa.first;
-        merging_segments[pool->tableId()][seg_id].push_back(pool->poolId());
+        merging_segments[pool->physical_table_id][seg_id].push_back(pool->pool_id);
     }
     auto block_slots = pool->getFreeBlockSlots();
-    LOG_DEBUG(log, "Added, pool_id={} table_id={} block_slots={} segment_count={} pool_count={} cost={}ns do_add_cost={}ns", //
-              pool->poolId(),
-              pool->tableId(),
-              block_slots,
-              tasks.size(),
-              read_pools.size(),
-              sw_add.elapsed(),
-              sw_do_add.elapsed());
+    LOG_DEBUG(
+        log,
+        "Added, pool_id={} table_id={} block_slots={} segment_count={} pool_count={} cost={}ns do_add_cost={}ns", //
+        pool->pool_id,
+        pool->physical_table_id,
+        block_slots,
+        tasks.size(),
+        read_pools.size(),
+        sw_add.elapsed(),
+        sw_do_add.elapsed());
 }
 
 std::pair<MergedTaskPtr, bool> SegmentReadTaskScheduler::scheduleMergedTask()
@@ -66,7 +69,7 @@ std::pair<MergedTaskPtr, bool> SegmentReadTaskScheduler::scheduleMergedTask()
 
     // If pool->valid(), read blocks.
     // If !pool->valid(), read path will clean it.
-    auto merged_task = merged_task_pool.pop(pool->poolId());
+    auto merged_task = merged_task_pool.pop(pool->pool_id);
     if (merged_task != nullptr)
     {
         GET_METRIC(tiflash_storage_read_thread_counter, type_sche_from_cache).Increment();
@@ -118,15 +121,22 @@ SegmentReadTaskPools SegmentReadTaskScheduler::getPoolsUnlock(const std::vector<
     return pools;
 }
 
+bool SegmentReadTaskScheduler::needScheduleToRead(const SegmentReadTaskPoolPtr & pool)
+{
+    return pool->getFreeBlockSlots() > 0 && // Block queue is not full and
+        (merged_task_pool.has(pool->pool_id) || // can schedule a segment from MergedTaskPool or
+         pool->getFreeActiveSegments() > 0); // schedule a new segment.
+}
+
 SegmentReadTaskPoolPtr SegmentReadTaskScheduler::scheduleSegmentReadTaskPoolUnlock()
 {
-    int64_t pool_count = read_pools.size(); // All read task pool need to be scheduled, including invalid read task pool.
+    int64_t pool_count
+        = read_pools.size(); // All read task pool need to be scheduled, including invalid read task pool.
     for (int64_t i = 0; i < pool_count; i++)
     {
         auto pool = read_pools.next();
-        // If pool->getFreeBlockSlots() > 0, schedule it for read blocks.
         // If !pool->valid(), schedule it for clean MergedTaskPool.
-        if (pool != nullptr && (pool->getFreeBlockSlots() > 0 || !pool->valid()))
+        if (pool != nullptr && (needScheduleToRead(pool) || !pool->valid()))
         {
             return pool;
         }
@@ -142,10 +152,11 @@ SegmentReadTaskPoolPtr SegmentReadTaskScheduler::scheduleSegmentReadTaskPoolUnlo
     return nullptr;
 }
 
-std::optional<std::pair<uint64_t, std::vector<uint64_t>>> SegmentReadTaskScheduler::scheduleSegmentUnlock(const SegmentReadTaskPoolPtr & pool)
+std::optional<std::pair<uint64_t, std::vector<uint64_t>>> SegmentReadTaskScheduler::scheduleSegmentUnlock(
+    const SegmentReadTaskPoolPtr & pool)
 {
     auto expected_merge_seg_count = std::min(read_pools.size(), 2); // Not accurate.
-    auto itr = merging_segments.find(pool->tableId());
+    auto itr = merging_segments.find(pool->physical_table_id);
     if (itr == merging_segments.end())
     {
         // No segment of tableId left.
@@ -167,10 +178,11 @@ std::optional<std::pair<uint64_t, std::vector<uint64_t>>> SegmentReadTaskSchedul
         }
         else
         {
-            result = std::pair{target->first, std::vector<uint64_t>(1, pool->poolId())};
+            result = std::pair{target->first, std::vector<uint64_t>(1, pool->pool_id)};
             auto mutable_target = segments.find(target->first);
-            auto itr = std::find(mutable_target->second.begin(), mutable_target->second.end(), pool->poolId());
-            *itr = mutable_target->second.back(); // SegmentReadTaskPool::scheduleSegment ensures `pool->poolId` must exists in `target`.
+            auto itr = std::find(mutable_target->second.begin(), mutable_target->second.end(), pool->pool_id);
+            *itr = mutable_target->second
+                       .back(); // SegmentReadTaskPool::scheduleSegment ensures `pool->poolId` must exists in `target`.
             mutable_target->second.resize(mutable_target->second.size() - 1);
         }
     }
@@ -208,7 +220,13 @@ bool SegmentReadTaskScheduler::schedule()
             auto elapsed_ms = sw_sche_once.elapsedMilliseconds();
             if (elapsed_ms >= 5)
             {
-                LOG_DEBUG(log, "scheduleMergedTask segment_id={} pool_ids={} cost={}ms pool_count={}", merged_task->getSegmentId(), merged_task->getPoolIds(), elapsed_ms, pool_count);
+                LOG_DEBUG(
+                    log,
+                    "scheduleMergedTask segment_id={} pool_ids={} cost={}ms pool_count={}",
+                    merged_task->getSegmentId(),
+                    merged_task->getPoolIds(),
+                    elapsed_ms,
+                    pool_count);
             }
             SegmentReaderPoolManager::instance().addTask(std::move(merged_task));
         }
@@ -220,7 +238,13 @@ bool SegmentReadTaskScheduler::schedule()
     auto sche_all_elapsed_ms = sw_sche_all.elapsedMilliseconds();
     if (sche_all_elapsed_ms >= 100)
     {
-        LOG_DEBUG(log, "schedule pool_count={} count={} cost={}ms do_sche_cost={}ms", pool_count, count, sche_all_elapsed_ms, sw_do_sche_all.elapsedMilliseconds());
+        LOG_DEBUG(
+            log,
+            "schedule pool_count={} count={} cost={}ms do_sche_cost={}ms",
+            pool_count,
+            count,
+            sche_all_elapsed_ms,
+            sw_do_sche_all.elapsedMilliseconds());
     }
     return run_sche;
 }

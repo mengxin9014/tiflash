@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +15,10 @@
 #pragma once
 
 #include <AggregateFunctions/registerAggregateFunctions.h>
-#include <Debug/dbgFuncCoprocessor.h>
 #include <Flash/Statistics/traverseExecutors.h>
 #include <Functions/registerFunctions.h>
+#include <TestUtils/ExecutorSerializer.h>
 #include <TestUtils/FunctionTestUtils.h>
-#include <TestUtils/executorSerializer.h>
 #include <TestUtils/mockExecutor.h>
 #include <WindowFunctions/registerWindowFunctions.h>
 
@@ -29,27 +28,31 @@ namespace DB::tests
 {
 TiDB::TP dataTypeToTP(const DataTypePtr & type);
 
-DB::ColumnsWithTypeAndName readBlock(BlockInputStreamPtr stream);
-DB::ColumnsWithTypeAndName readBlocks(std::vector<BlockInputStreamPtr> streams);
-Block mergeBlocks(Blocks blocks);
+ColumnsWithTypeAndName readBlock(BlockInputStreamPtr stream);
+ColumnsWithTypeAndName readBlocks(std::vector<BlockInputStreamPtr> streams);
 
+#define WRAP_FOR_TEST_BEGIN                         \
+    std::vector<bool> planner_bools{false, true};   \
+    for (auto enable_planner : planner_bools)       \
+    {                                               \
+        enablePlanner(enable_planner);              \
+        std::vector<bool> pipeline_bools{false};    \
+        if (enable_planner)                         \
+            pipeline_bools.push_back(true);         \
+        for (auto enable_pipeline : pipeline_bools) \
+        {                                           \
+            enablePipeline(enable_pipeline);
 
-#define WRAP_FOR_DIS_ENABLE_PLANNER_BEGIN \
-    std::vector<bool> bools{false, true}; \
-    for (auto enable_planner : bools)     \
-    {                                     \
-        enablePlanner(enable_planner);
-
-#define WRAP_FOR_DIS_ENABLE_PLANNER_END }
+#define WRAP_FOR_TEST_END \
+    }                     \
+    }
 
 class ExecutorTest : public ::testing::Test
 {
 protected:
-    void SetUp() override
-    {
-        initializeContext();
-        initializeClientInfo();
-    }
+    void SetUp() override;
+
+    void TearDown() override;
 
 public:
     ExecutorTest()
@@ -60,17 +63,40 @@ public:
 
     virtual void initializeContext();
 
-    void initializeClientInfo();
+    void initializeClientInfo() const;
 
     DAGContext & getDAGContext();
 
-    void enablePlanner(bool is_enable);
+    void enablePlanner(bool is_enable) const;
+
+    void enablePipeline(bool is_enable) const;
 
     static void dagRequestEqual(const String & expected_string, const std::shared_ptr<tipb::DAGRequest> & actual);
 
-    void executeInterpreter(const String & expected_string, const std::shared_ptr<tipb::DAGRequest> & request, size_t concurrency);
+    void executeInterpreter(
+        const String & expected_string,
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        size_t concurrency);
+    void executeInterpreterWithDeltaMerge(
+        const String & expected_string,
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        size_t concurrency);
 
-    void executeAndAssertColumnsEqual(const std::shared_ptr<tipb::DAGRequest> & request, const ColumnsWithTypeAndName & expect_columns);
+    ColumnsWithTypeAndName executeRawQuery(const String & query, size_t concurrency = 1);
+    void executeAndAssertColumnsEqual(
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        const ColumnsWithTypeAndName & expect_columns);
+
+    // To check the output column with index = column_index sorted.
+    struct SortInfo
+    {
+        size_t column_index;
+        bool desc;
+    };
+    using SortInfos = std::vector<SortInfo>;
+
+    // check whether the column in each output block sorted.
+    void executeAndAssertSortedBlocks(const std::shared_ptr<tipb::DAGRequest> & request, const SortInfos & sort_infos);
     void executeAndAssertRowsEqual(const std::shared_ptr<tipb::DAGRequest> & request, size_t expect_rows);
 
     enum SourceType
@@ -89,20 +115,43 @@ public:
         case ExchangeReceiver:
             return "exchange_receiver_0";
         default:
-            throw Exception(ErrorCodes::BAD_ARGUMENTS,
-                            "Unknown Executor Source type {}",
-                            type);
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown Executor Source type {}", type);
         }
     }
 
-    ColumnsWithTypeAndName executeStreams(
+    ColumnsWithTypeAndName executeStreams(DAGContext * dag_context, bool is_internal = true);
+
+    ColumnsWithTypeAndName executeStreams(const std::shared_ptr<tipb::DAGRequest> & request, size_t concurrency = 1);
+
+    ColumnsWithTypeAndName executeStreamsWithMemoryTracker(
         const std::shared_ptr<tipb::DAGRequest> & request,
         size_t concurrency = 1);
+
+    Blocks getExecuteStreamsReturnBlocks(const std::shared_ptr<tipb::DAGRequest> & request, size_t concurrency = 1);
+
+    /// test execution summary
+    // <rows, concurrency>
+    using ProfileInfo = std::pair<int, int>;
+    using Expect = std::unordered_map<String, ProfileInfo>;
+    static constexpr int not_check_rows = -1;
+    static constexpr int not_check_concurrency = -1;
+
+
+    void testForExecutionSummary(
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        const Expect & expect,
+        size_t concurrency = 10);
 
 private:
     void executeExecutor(
         const std::shared_ptr<tipb::DAGRequest> & request,
         std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &)> assert_func);
+
+    void checkBlockSorted(
+        const std::shared_ptr<tipb::DAGRequest> & request,
+        const SortInfos & sort_infos,
+        std::function<::testing::AssertionResult(const ColumnsWithTypeAndName &, const ColumnsWithTypeAndName &)>
+            assert_func);
 
 protected:
     MockDAGRequestContext context;
@@ -112,4 +161,39 @@ protected:
 #define ASSERT_DAGREQUEST_EQAUL(str, request) dagRequestEqual((str), (request));
 #define ASSERT_BLOCKINPUTSTREAM_EQAUL(str, request, concurrency) executeInterpreter((str), (request), (concurrency))
 
+// nullable type
+using ColStringNullableType = std::optional<typename TypeTraits<String>::FieldType>;
+using ColInt8NullableType = std::optional<typename TypeTraits<Int8>::FieldType>;
+using ColInt16NullableType = std::optional<typename TypeTraits<Int16>::FieldType>;
+using ColInt32NullableType = std::optional<typename TypeTraits<Int32>::FieldType>;
+using ColInt64NullableType = std::optional<typename TypeTraits<Int64>::FieldType>;
+using ColFloat32NullableType = std::optional<typename TypeTraits<Float32>::FieldType>;
+using ColFloat64NullableType = std::optional<typename TypeTraits<Float64>::FieldType>;
+using ColMyDateNullableType = std::optional<typename TypeTraits<MyDate>::FieldType>;
+using ColMyDateTimeNullableType = std::optional<typename TypeTraits<MyDateTime>::FieldType>;
+using ColDecimalNullableType = std::optional<typename TypeTraits<Decimal32>::FieldType>;
+
+// non nullable type
+using ColUInt64Type = typename TypeTraits<UInt64>::FieldType;
+using ColInt64Type = typename TypeTraits<Int64>::FieldType;
+using ColFloat64Type = typename TypeTraits<Float64>::FieldType;
+using ColStringType = typename TypeTraits<String>::FieldType;
+
+// nullable column
+using ColumnWithNullableString = std::vector<ColStringNullableType>;
+using ColumnWithNullableInt8 = std::vector<ColInt8NullableType>;
+using ColumnWithNullableInt16 = std::vector<ColInt16NullableType>;
+using ColumnWithNullableInt32 = std::vector<ColInt32NullableType>;
+using ColumnWithNullableInt64 = std::vector<ColInt64NullableType>;
+using ColumnWithNullableFloat32 = std::vector<ColFloat32NullableType>;
+using ColumnWithNullableFloat64 = std::vector<ColFloat64NullableType>;
+using ColumnWithNullableMyDate = std::vector<ColMyDateNullableType>;
+using ColumnWithNullableMyDateTime = std::vector<ColMyDateTimeNullableType>;
+using ColumnWithNullableDecimal = std::vector<ColDecimalNullableType>;
+
+// non nullable column
+using ColumnWithInt64 = std::vector<ColInt64Type>;
+using ColumnWithUInt64 = std::vector<ColUInt64Type>;
+using ColumnWithFloat64 = std::vector<ColFloat64Type>;
+using ColumnWithString = std::vector<ColStringType>;
 } // namespace DB::tests

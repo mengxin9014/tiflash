@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 
 #include <Common/MyTime.h>
 #include <Core/Types.h>
+#include <TiDB/Schema/TiDB.h>
 
 namespace DB
 {
@@ -35,7 +36,7 @@ public:
     }
     MyDateTime my_date_time;
     UInt8 time_type;
-    Int8 fsp;
+    Int32 fsp;
     UInt64 toChunkTime() const
     {
         UInt64 ret = 0;

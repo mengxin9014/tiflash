@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <Common/Exception.h>
 #include <Common/Logger.h>
 #include <DataStreams/IBlockInputStream.h>
+#include <DataStreams/SelectionByColumnIdTransformAction.h>
 #include <Storages/DeltaMerge/DeltaMergeHelpers.h>
 #include <Storages/DeltaMerge/RowKeyRange.h>
 #include <common/logger_useful.h>
@@ -43,16 +44,17 @@ class DMVersionFilterBlockInputStream : public IBlockInputStream
     constexpr static const char * COMPACT_FILTER_NAME = "mode=COMPACT";
 
 public:
-    DMVersionFilterBlockInputStream(const BlockInputStreamPtr & input,
-                                    const ColumnDefines & read_columns,
-                                    UInt64 version_limit_,
-                                    bool is_common_handle_,
-                                    const String & tracing_id = "")
+    DMVersionFilterBlockInputStream(
+        const BlockInputStreamPtr & input,
+        const ColumnDefines & read_columns,
+        UInt64 version_limit_,
+        bool is_common_handle_,
+        const String & tracing_id = "")
         : version_limit(version_limit_)
         , is_common_handle(is_common_handle_)
         , header(toEmptyBlock(read_columns))
-        , log(Logger::get((MODE == DM_VERSION_FILTER_MODE_MVCC ? MVCC_FILTER_NAME : COMPACT_FILTER_NAME),
-                          tracing_id))
+        , select_by_colid_action(input->getHeader(), header)
+        , log(Logger::get((MODE == DM_VERSION_FILTER_MODE_MVCC ? MVCC_FILTER_NAME : COMPACT_FILTER_NAME), tracing_id))
     {
         children.push_back(input);
 
@@ -63,21 +65,22 @@ public:
         delete_col_pos = input_header.getPositionByName(TAG_COLUMN_NAME);
     }
 
-    ~DMVersionFilterBlockInputStream()
+    ~DMVersionFilterBlockInputStream() override
     {
-        LOG_DEBUG(log,
-                  "Total rows: {}, pass: {:.2f}%"
-                  ", complete pass: {:.2f}%, complete not pass: {:.2f}%"
-                  ", not clean: {:.2f}%, is deleted: {:.2f}%, effective: {:.2f}%"
-                  ", read tso: {}",
-                  total_rows,
-                  passed_rows * 100.0 / total_rows,
-                  complete_passed * 100.0 / total_blocks,
-                  complete_not_passed * 100.0 / total_blocks,
-                  not_clean_rows * 100.0 / passed_rows,
-                  deleted_rows * 100.0 / passed_rows,
-                  effective_num_rows * 100.0 / passed_rows,
-                  version_limit);
+        LOG_DEBUG(
+            log,
+            "Total rows: {}, pass: {:.2f}%"
+            ", complete pass: {:.2f}%, complete not pass: {:.2f}%"
+            ", not clean: {:.2f}%, is deleted: {:.2f}%, effective: {:.2f}%"
+            ", start_ts: {}",
+            total_rows,
+            passed_rows * 100.0 / total_rows,
+            complete_passed * 100.0 / total_blocks,
+            complete_not_passed * 100.0 / total_blocks,
+            not_clean_rows * 100.0 / passed_rows,
+            deleted_rows * 100.0 / passed_rows,
+            effective_num_rows * 100.0 / passed_rows,
+            version_limit);
     }
 
     void readPrefix() override;
@@ -109,17 +112,20 @@ private:
 #define deleted (*delete_col_data)[i]
         if constexpr (MODE == DM_VERSION_FILTER_MODE_MVCC)
         {
-            filter[i] = !deleted && cur_version <= version_limit && (compare(cur_handle, next_handle) != 0 || next_version > version_limit);
+            filter[i] = !deleted && cur_version <= version_limit
+                && (compare(cur_handle, next_handle) != 0 || next_version > version_limit);
         }
         else if constexpr (MODE == DM_VERSION_FILTER_MODE_COMPACT)
         {
-            filter[i]
-                = cur_version >= version_limit || ((compare(cur_handle, next_handle) != 0 || next_version > version_limit) && !deleted);
+            filter[i] = cur_version >= version_limit
+                || ((compare(cur_handle, next_handle) != 0 || next_version > version_limit) && !deleted);
             not_clean[i] = filter[i] && (compare(cur_handle, next_handle) == 0 || deleted);
             is_deleted[i] = filter[i] && deleted;
             effective[i] = filter[i] && (compare(cur_handle, next_handle) != 0);
             if (filter[i])
-                gc_hint_version = std::min(gc_hint_version, calculateRowGcHintVersion(cur_handle, cur_version, next_handle, true, deleted));
+                gc_hint_version = std::min(
+                    gc_hint_version,
+                    calculateRowGcHintVersion(cur_handle, cur_version, next_handle, true, deleted));
         }
         else
         {
@@ -144,7 +150,9 @@ private:
         }
         else
         {
-            rowkey_column = std::make_unique<RowKeyColumnContainer>(raw_block.getByPosition(handle_col_pos).column, is_common_handle);
+            rowkey_column = std::make_unique<RowKeyColumnContainer>(
+                raw_block.getByPosition(handle_col_pos).column,
+                is_common_handle);
             version_col_data = getColumnVectorDataPtr<UInt64>(raw_block, version_col_pos);
             delete_col_data = getColumnVectorDataPtr<UInt8>(raw_block, delete_col_pos);
             return true;
@@ -199,9 +207,26 @@ private:
         return matched ? cur_version : std::numeric_limits<UInt64>::max();
     }
 
+    Block getNewBlock(const Block & block)
+    {
+        if (block.segmentRowIdCol() == nullptr)
+        {
+            return select_by_colid_action.transform(block);
+        }
+        else
+        {
+            // `DMVersionFilterBlockInputStream` is the last stage for generating segment row id.
+            // In the way we use it, the other columns are not used subsequently.
+            Block res;
+            res.setSegmentRowIdCol(block.segmentRowIdCol());
+            return res;
+        }
+    }
+
 private:
     const UInt64 version_limit;
     const bool is_common_handle;
+    // A sample block of `read` get
     const Block header;
 
     size_t handle_col_pos;
@@ -220,7 +245,7 @@ private:
     // First calculate the gc_hint_version of every pk according to the following rules,
     //     see the comments in `calculateRowGcHintVersion` to see how to calculate it for every pk
     // Then the block's gc_hint_version is the minimum value of all pk's gc_hint_version
-    UInt64 gc_hint_version;
+    UInt64 gc_hint_version = std::numeric_limits<UInt64>::max();
 
     // auxiliary variable for the calculation of gc_hint_version
     bool is_first_oldest_version = true;
@@ -242,6 +267,8 @@ private:
     size_t not_clean_rows = 0;
     size_t effective_num_rows = 0;
     size_t deleted_rows = 0;
+
+    SelectionByColumnIdTransformAction select_by_colid_action;
 
     const LoggerPtr log;
 };

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,15 +14,11 @@
 
 #pragma once
 
-#include <Common/FailPoint.h>
+#include <DataStreams/AddExtraTableIDColumnTransformAction.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
+#include <Flash/Coprocessor/RuntimeFilterMgr.h>
 #include <Storages/DeltaMerge/ReadThread/SegmentReadTaskScheduler.h>
 #include <Storages/DeltaMerge/SegmentReadTaskPool.h>
-
-namespace DB::FailPoints
-{
-extern const char pause_when_reading_from_dt_stream[];
-}
 
 namespace DB::DM
 {
@@ -34,36 +30,41 @@ public:
     UnorderedInputStream(
         const SegmentReadTaskPoolPtr & task_pool_,
         const ColumnDefines & columns_to_read_,
-        const int extra_table_id_index,
-        const TableID physical_table_id,
-        const String & req_id)
+        int extra_table_id_index_,
+        const String & req_id,
+        const RuntimeFilteList & runtime_filter_list_ = std::vector<RuntimeFilterPtr>{},
+        int max_wait_time_ms_ = 0)
         : task_pool(task_pool_)
-        , header(toEmptyBlock(columns_to_read_))
-        , extra_table_id_index(extra_table_id_index)
-        , physical_table_id(physical_table_id)
+        , header(AddExtraTableIDColumnTransformAction::buildHeader(columns_to_read_, extra_table_id_index_))
         , log(Logger::get(req_id))
         , ref_no(0)
         , task_pool_added(false)
+        , runtime_filter_list(runtime_filter_list_)
+        , max_wait_time_ms(max_wait_time_ms_)
     {
-        if (extra_table_id_index != InvalidColumnID)
-        {
-            auto & extra_table_id_col_define = getExtraTableIDColumnDefine();
-            ColumnWithTypeAndName col{extra_table_id_col_define.type->createColumn(), extra_table_id_col_define.type, extra_table_id_col_define.name, extra_table_id_col_define.id, extra_table_id_col_define.default_value};
-            header.insert(extra_table_id_index, col);
-        }
         ref_no = task_pool->increaseUnorderedInputStreamRefCount();
-        LOG_DEBUG(log, "Created, pool_id={} ref_no={}", task_pool->poolId(), ref_no);
+        LOG_DEBUG(log, "Created, pool_id={} ref_no={}", task_pool->pool_id, ref_no);
     }
 
-    ~UnorderedInputStream()
+    ~UnorderedInputStream() override
     {
         task_pool->decreaseUnorderedInputStreamRefCount();
-        LOG_DEBUG(log, "Destroy, pool_id={} ref_no={}", task_pool->poolId(), ref_no);
+        LOG_DEBUG(log, "Destroy, pool_id={} ref_no={}", task_pool->pool_id, ref_no);
     }
 
     String getName() const override { return NAME; }
 
     Block getHeader() const override { return header; }
+
+    // only for unit test
+    // The logic order of unit test is error, it will build input stream firstly and register rf secondly.
+    // It causes input stream could not get RF list in constructor.
+    // So, for unit test, it should call this function separated.
+    void setRuntimeFilterInfo(const RuntimeFilteList & runtime_filter_list_, int max_wait_time_ms_)
+    {
+        runtime_filter_list = runtime_filter_list_;
+        max_wait_time_ms = max_wait_time_ms_;
+    }
 
 protected:
     Block readImpl() override
@@ -82,28 +83,18 @@ protected:
         addReadTaskPoolToScheduler();
         while (true)
         {
-            FAIL_POINT_PAUSE(FailPoints::pause_when_reading_from_dt_stream);
             Block res;
             task_pool->popBlock(res);
             if (res)
             {
-                if (extra_table_id_index != InvalidColumnID)
-                {
-                    auto & extra_table_id_col_define = getExtraTableIDColumnDefine();
-                    ColumnWithTypeAndName col{{}, extra_table_id_col_define.type, extra_table_id_col_define.name, extra_table_id_col_define.id};
-                    size_t row_number = res.rows();
-                    auto col_data = col.type->createColumnConst(row_number, Field(physical_table_id));
-                    col.column = std::move(col_data);
-                    res.insert(extra_table_id_index, std::move(col));
-                }
-                if (!res.rows())
-                {
-                    continue;
-                }
-                else
+                if (res.rows() > 0)
                 {
                     total_rows += res.rows();
                     return res;
+                }
+                else
+                {
+                    continue;
                 }
             }
             else
@@ -116,7 +107,12 @@ protected:
 
     void readSuffixImpl() override
     {
-        LOG_DEBUG(log, "Finish read from storage, pool_id={} ref_no={} rows={}", task_pool->poolId(), ref_no, total_rows);
+        LOG_DEBUG(
+            log,
+            "Finish read from storage, pool_id={} ref_no={} rows={}",
+            task_pool->pool_id,
+            ref_no,
+            total_rows);
     }
 
     void addReadTaskPoolToScheduler()
@@ -125,20 +121,30 @@ protected:
         {
             return;
         }
-        std::call_once(task_pool->addToSchedulerFlag(), [&]() { SegmentReadTaskScheduler::instance().add(task_pool); });
+        std::call_once(task_pool->addToSchedulerFlag(), [&]() {
+            prepareRuntimeFilter();
+            SegmentReadTaskScheduler::instance().add(task_pool);
+        });
         task_pool_added = true;
     }
 
 private:
+    void prepareRuntimeFilter();
+
+    void pushDownReadyRFList(std::vector<RuntimeFilterPtr> readyRFList);
+
     SegmentReadTaskPoolPtr task_pool;
     Block header;
-    // position of the ExtraPhysTblID column in column_names parameter in the StorageDeltaMerge::read function.
-    const int extra_table_id_index;
+
     bool done = false;
-    TableID physical_table_id;
     LoggerPtr log;
     int64_t ref_no;
-    size_t total_rows = 0;
     bool task_pool_added;
+
+    size_t total_rows = 0;
+
+    // runtime filter
+    std::vector<RuntimeFilterPtr> runtime_filter_list;
+    int max_wait_time_ms;
 };
 } // namespace DB::DM

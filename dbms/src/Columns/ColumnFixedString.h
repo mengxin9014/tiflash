@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -59,25 +59,13 @@ public:
 
     MutableColumnPtr cloneResized(size_t size) const override;
 
-    size_t size() const override
-    {
-        return chars.size() / n;
-    }
+    size_t size() const override { return chars.size() / n; }
 
-    size_t byteSize() const override
-    {
-        return chars.size() + sizeof(n);
-    }
+    size_t byteSize() const override { return chars.size() + sizeof(n); }
 
-    size_t byteSize(size_t /*offset*/, size_t limit) const override
-    {
-        return limit * n;
-    }
+    size_t byteSize(size_t /*offset*/, size_t limit) const override { return limit * n; }
 
-    size_t allocatedBytes() const override
-    {
-        return chars.allocated_bytes() + sizeof(n);
-    }
+    size_t allocatedBytes() const override { return chars.allocated_bytes() + sizeof(n); }
 
     Field operator[](size_t index) const override
     {
@@ -89,34 +77,36 @@ public:
         res.assignString(reinterpret_cast<const char *>(&chars[n * index]), n);
     }
 
-    StringRef getDataAt(size_t index) const override
-    {
-        return StringRef(&chars[n * index], n);
-    }
+    StringRef getDataAt(size_t index) const override { return StringRef(&chars[n * index], n); }
 
     void insert(const Field & x) override;
 
     void insertFrom(const IColumn & src_, size_t index) override;
 
+    void insertManyFrom(const IColumn & src_, size_t position, size_t length) override;
+
+    void insertDisjunctFrom(const IColumn & src_, const std::vector<size_t> & position_vec) override;
+
     void insertData(const char * pos, size_t length) override;
 
-    void insertDefault() override
-    {
-        chars.resize_fill(chars.size() + n);
-    }
+    void insertDefault() override { chars.resize_fill(chars.size() + n); }
+    void insertManyDefaults(size_t length) override { chars.resize_fill(chars.size() + n * length); }
 
-    void popBack(size_t elems) override
-    {
-        chars.resize_assume_reserved(chars.size() - n * elems);
-    }
+    void popBack(size_t elems) override { chars.resize_assume_reserved(chars.size() - n * elems); }
 
-    StringRef serializeValueIntoArena(size_t index, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const override;
+    StringRef serializeValueIntoArena(
+        size_t index,
+        Arena & arena,
+        char const *& begin,
+        const TiDB::TiDBCollatorPtr &,
+        String &) const override;
 
     const char * deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &) override;
 
     void updateHashWithValue(size_t index, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
-    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+        const override;
 
     void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
@@ -134,19 +124,21 @@ public:
 
     ColumnPtr permute(const Permutation & perm, size_t limit) const override;
 
-    ColumnPtr replicate(const Offsets & offsets) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const override;
 
     MutableColumns scatter(ColumnIndex num_columns, const Selector & selector) const override
     {
         return scatterImpl<ColumnFixedString>(num_columns, selector);
     }
 
+    void scatterTo(ScatterColumns & columns, const Selector & selector) const override
+    {
+        scatterToImpl<ColumnFixedString>(columns, selector);
+    }
+
     void gather(ColumnGathererStream & gatherer_stream) override;
 
-    void reserve(size_t size) override
-    {
-        chars.reserve(n * size);
-    };
+    void reserve(size_t size) override { chars.reserve(n * size); };
 
     void getExtremes(Field & min, Field & max) const override;
 

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,13 +25,13 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <pcg_random.hpp>
 #include <set>
 #include <shared_mutex>
 #include <thread>
 
 namespace DB
 {
-class Context;
 
 /** Using a fixed number of threads, perform an arbitrary number of tasks in an infinite loop.
   * In this case, one task can run simultaneously from different threads.
@@ -43,6 +43,7 @@ class BackgroundProcessingPool
 {
 public:
     /// Returns true, if some useful work was done. In that case, thread will not sleep before next run of this task.
+    /// Returns false, the next time will be done later.
     using Task = std::function<bool()>;
 
 
@@ -52,7 +53,11 @@ public:
         /// Wake up any thread.
         void wake();
 
-        TaskInfo(BackgroundProcessingPool & pool_, const Task & function_, const bool multi_, const uint64_t interval_ms_)
+        TaskInfo(
+            BackgroundProcessingPool & pool_,
+            const Task & function_,
+            const bool multi_,
+            const uint64_t interval_ms_)
             : pool(pool_)
             , function(function_)
             , multi(multi_)
@@ -69,10 +74,13 @@ public:
         std::shared_mutex rwlock;
         std::atomic<bool> removed{false};
 
-        /// only can be invoked by one thread at same time.
+        // multi=true, can be run by multiple threads concurrently
+        // multi=false, only run on one thread
         const bool multi;
-        std::atomic_bool occupied{false};
+        // The number of worker threads is going to execute this task
+        size_t concurrent_executors = 0;
 
+        // User defined execution interval
         const uint64_t interval_milliseconds;
 
         std::multimap<Poco::Timestamp, std::shared_ptr<TaskInfo>>::iterator iterator;
@@ -85,17 +93,15 @@ public:
 
     size_t getNumberOfThreads() const { return size; }
 
-    /// if multi == false, this task can only be called by one thread at same time.
-    /// If interval_ms is zero, this task will be scheduled with `sleep_seconds`.
-    /// If interval_ms is not zero, this task will be scheduled with `interval_ms`.
-    ///
-    /// But at each scheduled time, there may be multiple threads try to run the same task,
-    ///   and then execute the same task one by one in sequential order(not simultaneously) even if `multi` is false.
-    /// For example, consider the following case when it's time to schedule a task,
-    /// 1. thread A get the task, mark the task as occupied and begin to execute it
-    /// 2. thread B also get the same task
-    /// 3. thread A finish the execution of the task quickly, release the task and try to update the next schedule time of the task
-    /// 4. thread B find the task is not occupied and execute the task again almost immediately
+    /// task
+    /// - A function return bool.
+    /// - Returning true mean some useful work was done. In that case, thread will not sleep before next run of this task.
+    /// - Returning false, the next time will be done later.
+    /// multi
+    /// - If multi == false, this task can only be executed by one thread within each scheduled time.
+    /// interval_ms
+    /// - If interval_ms is zero, this task will be scheduled with `sleep_seconds`.
+    /// - If interval_ms is not zero, this task will be scheduled with `interval_ms`.
     TaskHandle addTask(const Task & task, bool multi = true, size_t interval_ms = 0);
     void removeTask(const TaskHandle & task);
 
@@ -103,6 +109,11 @@ public:
 
     std::vector<pid_t> getThreadIds();
     void addThreadId(pid_t tid);
+
+private:
+    void threadFunction(size_t thread_idx) noexcept;
+
+    TaskHandle tryPopTask(pcg64 & rng) noexcept;
 
 private:
     using Tasks = std::multimap<Poco::Timestamp, TaskHandle>; /// key is desired next time to execute (priority).
@@ -123,8 +134,6 @@ private:
 
     std::atomic<bool> shutdown{false};
     std::condition_variable wake_event;
-
-    void threadFunction(size_t thread_idx);
 };
 
 using BackgroundProcessingPoolPtr = std::shared_ptr<BackgroundProcessingPool>;

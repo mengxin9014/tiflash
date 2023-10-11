@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@
 => drop table if exists default.test_9998
 => drop table if exists default.test_9999
 
-=> DBGInvoke __set_flush_threshold(1000000, 1000000)
 
 # Data.
 => DBGInvoke __mock_tidb_table(default, test, 'col_1 String, col_2 Int64, col_3 MyDatetime')
 => DBGInvoke __mock_tidb_partition(default, test, 9997)
 => DBGInvoke __mock_tidb_partition(default, test, 9998)
 => DBGInvoke __mock_tidb_partition(default, test, 9999)
-=> DBGInvoke __refresh_schemas()
+
+=> DBGInvoke __refresh_mapped_table_schema(default, test)
 
 => DBGInvoke __put_region(1, 0, 100, default, test, 9997)
 
@@ -128,5 +128,4 @@
 => drop table if exists default.test_9997
 => drop table if exists default.test_9998
 => drop table if exists default.test_9999
-=> DBGInvoke __refresh_schemas()
 => DBGInvoke __enable_schema_sync_service('true')

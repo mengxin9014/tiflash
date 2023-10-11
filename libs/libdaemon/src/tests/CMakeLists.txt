@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 
 include (${TiFlash_SOURCE_DIR}/cmake/add_check.cmake)
 
-add_executable (gtests_libdaemon EXCLUDE_FROM_ALL gtest_daemon_config.cpp)
-target_link_libraries (gtests_libdaemon gtest_main daemon tipb)
+add_executable(gtests_libdaemon EXCLUDE_FROM_ALL gtest_daemon_config.cpp)
+target_link_libraries(gtests_libdaemon gtest_main daemon tipb kvproto)
 #add for libcctz used by BaseDaemon
 if (APPLE)
     set_target_properties(gtests_libdaemon PROPERTIES LINK_FLAGS "-framework CoreFoundation")
